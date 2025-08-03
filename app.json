@@ -37,6 +37,8 @@
     ],
     "experiments": {
       "typedRoutes": true
-    }
+    },
+    "main": "expo-router/entry"
+  
   }
 }
