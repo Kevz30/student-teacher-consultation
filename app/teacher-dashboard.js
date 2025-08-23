@@ -1,9 +1,20 @@
+// app/teacher-dashboard.js
 import * as DocumentPicker from "expo-document-picker";
 import * as FileSystem from "expo-file-system";
 import * as ImagePicker from "expo-image-picker";
 import { router, useNavigation } from "expo-router";
 import { getAuth, signOut, updateProfile } from "firebase/auth";
-import { doc, getDoc, serverTimestamp, setDoc } from "firebase/firestore";
+import {
+  collection,
+  doc,
+  getDoc,
+  getDocs,
+  limit,
+  query,
+  serverTimestamp,
+  setDoc,
+  where,
+} from "firebase/firestore";
 import { useEffect, useLayoutEffect, useState } from "react";
 import {
   Alert,
@@ -17,8 +28,11 @@ import {
 import * as XLSX from "xlsx";
 import { createDefaultGrid } from "../app/utils/scheduleTemplate";
 import ScheduleGrid from "../components/ScheduleGrid";
+import TeacherConsultModal from "../components/TeacherConsultModal";
 import db from "../constants/firestore";
 import uploadToCloudinary from "./utils/uploadToCloudinary";
+
+const norm = (s = "") => String(s).replace(/–/g, "-").replace(/\s+/g, "").toLowerCase();
 
 export default function TeacherDashboard() {
   const [grid, setGrid] = useState(null);
@@ -27,6 +41,11 @@ export default function TeacherDashboard() {
   const [settingsVisible, setSettingsVisible] = useState(false);
   const [displayName, setDisplayName] = useState("");
   const [photoURL, setPhotoURL] = useState("");
+
+  // modal state for yellow tap
+  const [consultationId, setConsultationId] = useState(null);
+  const [teacherModalOpen, setTeacherModalOpen] = useState(false);
+  const [lastTap, setLastTap] = useState(null); // {day, slot}
 
   const auth = getAuth();
   const user = auth.currentUser;
@@ -54,8 +73,7 @@ export default function TeacherDashboard() {
 
   useEffect(() => {
     if (!uid) return;
-
-    const fetch = async () => {
+    (async () => {
       const docSnap = await getDoc(doc(db, "schedules", uid));
       if (docSnap.exists()) {
         setGrid(docSnap.data().grid);
@@ -64,11 +82,75 @@ export default function TeacherDashboard() {
       }
       setDisplayName(user?.displayName || "");
       setPhotoURL(user?.photoURL || "");
-    };
+    })();
+  }, [uid]);
 
-    fetch();
-  }, []);
+  // ---------- Teacher: tap yellow -> open modal ----------
+  const onOpenTeacherConsultModal = async ({ day, slot }) => {
+    try {
+      if (!uid) return;
+      setLastTap({ day, slot });
 
+      // exact match first
+      let q1 = query(
+        collection(db, "consultations"),
+        where("teacherId", "==", uid),
+        where("day", "==", day),
+        where("time", "==", slot),
+        limit(1)
+      );
+      let qs = await getDocs(q1);
+
+      // fallback: normalize time text
+      if (qs.empty) {
+        const q2 = query(
+          collection(db, "consultations"),
+          where("teacherId", "==", uid),
+          where("day", "==", day),
+          limit(25)
+        );
+        const qs2 = await getDocs(q2);
+        const hit = qs2.docs.find((d) => norm(d.data().time) === norm(slot));
+        if (hit) qs = { empty: false, docs: [hit] };
+      }
+
+      if (qs.empty) {
+        Alert.alert("No request", "No consultation found for this block.");
+        return;
+      }
+
+      setConsultationId(qs.docs[0].id);
+      setTeacherModalOpen(true);
+    } catch (e) {
+      Alert.alert("Error", String(e?.message || e));
+    }
+  };
+
+  const handleModalClose = async () => {
+    setTeacherModalOpen(false);
+
+    try {
+      if (!consultationId) return;
+      const snap = await getDoc(doc(db, "consultations", consultationId));
+      const d = snap.exists() ? snap.data() : null;
+
+      // if teacher signed, turn that cell blue
+      if (d && String(d.status || "").toLowerCase() === "signed_by_teacher" && lastTap) {
+        const newGrid = { ...(grid || {}) };
+        const { day, slot } = lastTap;
+        if (newGrid?.[day]?.[slot]) {
+          newGrid[day][slot] = "blue";
+          await setDoc(doc(db, "schedules", uid), { grid: newGrid }, { merge: true });
+          setGrid(newGrid);
+        }
+      }
+    } finally {
+      setConsultationId(null);
+      setLastTap(null);
+    }
+  };
+
+  // ---------- Upload / Edit / Save schedule ----------
   const handleUpload = async () => {
     try {
       const result = await DocumentPicker.getDocumentAsync({
@@ -78,7 +160,6 @@ export default function TeacherDashboard() {
         ],
         copyToCacheDirectory: true,
       });
-
       if (result.canceled || !result.assets?.length) return;
 
       const file = result.assets[0];
@@ -89,16 +170,6 @@ export default function TeacherDashboard() {
       const json = XLSX.utils.sheet_to_json(sheet, { header: 1 });
 
       const headerRow = json[0];
-      const isValidHeader =
-        headerRow.length >= 2 &&
-        headerRow.slice(1).every((day) =>
-          typeof day === "string" && day.toLowerCase().match(/mon|tue|wed|thu|fri|sat/i)
-        );
-
-      if (!isValidHeader) {
-        return Alert.alert("Invalid format", "Header row must contain weekdays from column B.");
-      }
-
       const merged = sheet["!merges"] || [];
       const newGrid = createDefaultGrid();
 
@@ -110,9 +181,7 @@ export default function TeacherDashboard() {
         const rows = json.slice(startRow, endRow + 1);
         rows.forEach((_, i) => {
           const time = json[startRow + i][0];
-          if (newGrid[day] && newGrid[day][time]) {
-            newGrid[day][time] = "red";
-          }
+          if (newGrid[day] && newGrid[day][time]) newGrid[day][time] = "red";
         });
       });
 
@@ -127,24 +196,14 @@ export default function TeacherDashboard() {
   const handleBlockSelect = (day, slot, newColor) => {
     const current = grid[day][slot];
     if (current === newColor) return;
-
-    const newGrid = {
-      ...grid,
-      [day]: {
-        ...grid[day],
-        [slot]: newColor,
-      },
-    };
+    const newGrid = { ...grid, [day]: { ...grid[day], [slot]: newColor } };
     setGrid(newGrid);
     setShowConfirm(true);
   };
 
   const handleConfirm = async () => {
     if (!uid || !grid) return;
-    await setDoc(doc(db, "schedules", uid), {
-      grid,
-      uploadedAt: serverTimestamp(),
-    });
+    await setDoc(doc(db, "schedules", uid), { grid, uploadedAt: serverTimestamp() });
     Alert.alert("Saved", "Schedule updated.");
     setShowConfirm(false);
   };
@@ -166,7 +225,6 @@ export default function TeacherDashboard() {
       allowsEditing: true,
       quality: 1,
     });
-
     if (result.canceled) return;
 
     const uri = result.assets[0].uri;
@@ -179,16 +237,12 @@ export default function TeacherDashboard() {
       setPhotoURL(imageUrl);
       Alert.alert("Success", "Profile photo updated.");
     } catch (err) {
-      console.error(err);
       Alert.alert("Upload Failed", "Could not upload image.");
     }
   };
 
   const handleLogout = async () => {
-  Alert.alert(
-    "Confirm Logout",
-    "Are you sure you want to logout?",
-    [
+    Alert.alert("Confirm Logout", "Are you sure you want to logout?", [
       { text: "Cancel", style: "cancel" },
       {
         text: "Logout",
@@ -198,10 +252,8 @@ export default function TeacherDashboard() {
           router.replace("/screens/LoginScreen");
         },
       },
-    ]
-  );
-};
-
+    ]);
+  };
 
   return (
     <View style={{ flex: 1, padding: 20 }}>
@@ -219,7 +271,11 @@ export default function TeacherDashboard() {
         </TouchableOpacity>
       ) : (
         <>
-          <ScheduleGrid grid={grid} onSelectBlock={handleBlockSelect} />
+          <ScheduleGrid
+            grid={grid}
+            onSelectBlock={handleBlockSelect}            // keep edit modal
+            onOpenTeacherConsultModal={onOpenTeacherConsultModal} // yellow tap -> modal
+          />
           {showConfirm && (
             <TouchableOpacity
               onPress={handleConfirm}
@@ -237,11 +293,19 @@ export default function TeacherDashboard() {
         </>
       )}
 
-      {/* Settings Drawer Modal */}
+      {teacherModalOpen && (
+        <TeacherConsultModal
+          visible={teacherModalOpen}
+          onClose={handleModalClose}
+          consultationId={consultationId}
+        />
+      )}
+
+      {/* Settings Drawer */}
       <Modal
         visible={settingsVisible}
         animationType="slide"
-        transparent={true}
+        transparent
         onRequestClose={() => setSettingsVisible(false)}
       >
         <View style={{ flex: 1, flexDirection: "row" }}>
@@ -262,10 +326,7 @@ export default function TeacherDashboard() {
 
             <TouchableOpacity onPress={handleImagePick}>
               {photoURL ? (
-                <Image
-                  source={{ uri: photoURL }}
-                  style={{ width: 100, height: 100, borderRadius: 50 }}
-                />
+                <Image source={{ uri: photoURL }} style={{ width: 100, height: 100, borderRadius: 50 }} />
               ) : (
                 <Text>📷 Upload Display Picture</Text>
               )}
@@ -275,12 +336,7 @@ export default function TeacherDashboard() {
             <TextInput
               value={displayName}
               onChangeText={setDisplayName}
-              style={{
-                borderWidth: 1,
-                padding: 8,
-                borderRadius: 6,
-                marginTop: 4,
-              }}
+              style={{ borderWidth: 1, padding: 8, borderRadius: 6, marginTop: 4 }}
             />
 
             <TouchableOpacity
@@ -292,24 +348,14 @@ export default function TeacherDashboard() {
 
             <TouchableOpacity
               onPress={handleSaveSettings}
-              style={{
-                marginTop: 20,
-                backgroundColor: "#007bff",
-                padding: 10,
-                borderRadius: 6,
-              }}
+              style={{ marginTop: 20, backgroundColor: "#007bff", padding: 10, borderRadius: 6 }}
             >
               <Text style={{ color: "#fff", textAlign: "center" }}>Save Settings</Text>
             </TouchableOpacity>
 
             <TouchableOpacity
               onPress={handleLogout}
-              style={{
-                marginTop: 20,
-                backgroundColor: "#f44336",
-                padding: 10,
-                borderRadius: 6,
-              }}
+              style={{ marginTop: 20, backgroundColor: "#f44336", padding: 10, borderRadius: 6 }}
             >
               <Text style={{ color: "#fff", textAlign: "center" }}>Logout</Text>
             </TouchableOpacity>

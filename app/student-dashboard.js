@@ -9,6 +9,7 @@ import blankProfile from "../assets/images/blank-profile.png";
 import db from "../constants/firestore";
 import { matchStudentToClasses } from "./utils/matchingHelper";
 
+
 export default function StudentDashboard() {
   const [matchedTeachers, setMatchedTeachers] = useState([]);
   const auth = getAuth();
@@ -57,7 +58,7 @@ export default function StudentDashboard() {
           keyExtractor={(_, i) => i.toString()}
           renderItem={({ item }) => (
             <TouchableOpacity
-              onPress={() => router.push(`/teacher-schedule/${item.teacherId}`)}
+              onPress={() => router.push(`/student-schedule/${item.teacherId}`)}
               style={{
                 borderWidth: 1,
                 borderRadius: 8,

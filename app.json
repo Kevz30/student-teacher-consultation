@@ -33,12 +33,15 @@
           "resizeMode": "contain",
           "backgroundColor": "#ffffff"
         }
-      ]
+      ],
+      "expo-asset"
     ],
     "experiments": {
       "typedRoutes": true
     },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
     "main": "expo-router/entry"
-  
   }
 }

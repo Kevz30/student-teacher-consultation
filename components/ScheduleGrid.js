@@ -1,3 +1,4 @@
+// components/ScheduleGrid.js
 import { useState } from "react";
 import {
   Modal,
@@ -9,19 +10,40 @@ import {
 } from "react-native";
 import { TIMESLOTS, WEEKDAYS } from "../app/utils/scheduleTemplate";
 
-export default function ScheduleGrid({ grid, onSelectBlock }) {
-  const [selected, setSelected] = useState(null);
-  const isEditable = typeof onSelectBlock === "function";
+const normalize = (str = "") =>
+  String(str).replace(/–/g, "-").replace(/\s+/g, "").toLowerCase();
 
-  const handlePress = (day, slot) => {
-    if (isEditable) {
-      setSelected({ day, slot });
+export default function ScheduleGrid({
+  grid,
+  onSelectBlock,                 // optional (teacher color editor)
+  readonly = false,               // true for student
+  onRequestBlock,                 // student: white tap -> details form
+  consultationMap,                // { [day]: { [slot]: consultationId } } (can be raw)
+  onOpenTeacherConsultModal,      // teacher: yellow tap -> open modal
+}) {
+  const [selected, setSelected] = useState(null);
+  const isEditable = !readonly && typeof onSelectBlock === "function";
+
+  const handlePressTeacher = (day, slot, color) => {
+    if (color === "yellow") {
+      const dayKey = normalize(day);
+      const timeKey = normalize(slot);
+      const cid =
+        consultationMap?.[dayKey]?.[timeKey] ??
+        consultationMap?.[day]?.[slot] ??
+        null;
+
+      if (typeof onOpenTeacherConsultModal === "function") {
+        onOpenTeacherConsultModal({ day, slot, consultationId: cid });
+      }
+      return;
     }
+    if (isEditable) setSelected({ day, slot });
   };
 
-  const handleChange = (color) => {
+  const handleChange = (newColor) => {
     if (selected && isEditable) {
-      onSelectBlock(selected.day, selected.slot, color);
+      onSelectBlock(selected.day, selected.slot, newColor);
       setSelected(null);
     }
   };
@@ -33,9 +55,9 @@ export default function ScheduleGrid({ grid, onSelectBlock }) {
           {/* Time column */}
           <View style={{ marginRight: 2 }}>
             <View style={{ height: 30 }} />
-            {TIMESLOTS.map((slot, i) => (
+            {TIMESLOTS.map((slot) => (
               <View
-                key={i}
+                key={slot}
                 style={{
                   height: 30,
                   justifyContent: "center",
@@ -49,8 +71,8 @@ export default function ScheduleGrid({ grid, onSelectBlock }) {
           </View>
 
           {/* Day columns */}
-          {WEEKDAYS.map((day, dIndex) => (
-            <View key={dIndex} style={{ marginRight: 2 }}>
+          {WEEKDAYS.map((day) => (
+            <View key={day} style={{ marginRight: 2 }}>
               <View
                 style={{
                   height: 30,
@@ -60,13 +82,24 @@ export default function ScheduleGrid({ grid, onSelectBlock }) {
               >
                 <Text style={{ fontWeight: "bold", fontSize: 12 }}>{day}</Text>
               </View>
-              {TIMESLOTS.map((slot, sIndex) => {
+
+              {TIMESLOTS.map((slot) => {
                 const color = grid?.[day]?.[slot] || "white";
+                const disableStudent = readonly && color !== "white";
+
                 return (
                   <TouchableOpacity
-                    key={sIndex}
-                    disabled={!isEditable}
-                    onPress={() => handlePress(day, slot)}
+                    key={`${day}-${slot}`}
+                    disabled={disableStudent}
+                    onPress={() => {
+                      if (readonly) {
+                        if (color === "white" && typeof onRequestBlock === "function") {
+                          onRequestBlock(day, slot);
+                        }
+                        return;
+                      }
+                      handlePressTeacher(day, slot, color);
+                    }}
                     style={{
                       height: 30,
                       width: 48,
@@ -75,7 +108,7 @@ export default function ScheduleGrid({ grid, onSelectBlock }) {
                       borderWidth: 1,
                       justifyContent: "center",
                       alignItems: "center",
-                      opacity: isEditable ? 1 : 0.6,
+                      opacity: readonly ? 0.9 : 1,
                     }}
                   >
                     <Text style={{ fontSize: 8 }}>
@@ -89,7 +122,7 @@ export default function ScheduleGrid({ grid, onSelectBlock }) {
         </View>
       </ScrollView>
 
-      {/* Modal */}
+      {/* Teacher edit modal (optional) */}
       {isEditable && (
         <Modal
           transparent
@@ -116,23 +149,25 @@ export default function ScheduleGrid({ grid, onSelectBlock }) {
               <Text style={{ fontWeight: "bold", marginBottom: 10 }}>
                 Change block status:
               </Text>
-              {["white", "red", "yellow", "blue"].map((color) => (
+
+              {["white", "red", "yellow", "blue"].map((c) => (
                 <Pressable
-                  key={color}
-                  onPress={() => handleChange(color)}
+                  key={c}
+                  onPress={() => handleChange(c)}
                   style={{
-                    backgroundColor: color,
+                    backgroundColor: c,
                     padding: 10,
                     marginVertical: 5,
                     borderRadius: 5,
                     alignItems: "center",
                   }}
                 >
-                  <Text style={{ color: color === "white" ? "black" : "white" }}>
-                    {color.toUpperCase()}
+                  <Text style={{ color: c === "white" ? "black" : "white" }}>
+                    {c.toUpperCase()}
                   </Text>
                 </Pressable>
               ))}
+
               <Pressable
                 onPress={() => setSelected(null)}
                 style={{
