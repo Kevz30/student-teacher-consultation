@@ -1,6 +1,14 @@
 // components/TeacherConsultModal.js
 import * as Sharing from "expo-sharing";
-import { doc, getDoc, serverTimestamp, setDoc, updateDoc } from "firebase/firestore";
+import {
+  addDoc,
+  collection,
+  doc,
+  getDoc,
+  serverTimestamp,
+  setDoc,
+  updateDoc,
+} from "firebase/firestore";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -8,6 +16,7 @@ import {
   Modal,
   ScrollView,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from "react-native";
@@ -26,6 +35,10 @@ export default function TeacherConsultModal({
   const [consult, setConsult] = useState(null);
   const [mode, setMode] = useState("view"); // 'view' | 'sign'
   const sigRef = useRef(null);
+
+  // decline reason modal
+  const [declineOpen, setDeclineOpen] = useState(false);
+  const [declineReason, setDeclineReason] = useState("");
 
   useEffect(() => {
     let mounted = true;
@@ -48,10 +61,16 @@ export default function TeacherConsultModal({
       }
     };
     load();
-    return () => { mounted = false; setMode("view"); setConsult(null); };
+    return () => {
+      mounted = false;
+      setMode("view");
+      setConsult(null);
+      setDeclineOpen(false);
+      setDeclineReason("");
+    };
   }, [visible, consultationId]);
 
-  // Make readable strings from boolean flags
+  // readable strings from boolean flags
   const methodText = useMemo(() => {
     const m = consult?.form?.methods || {};
     const items = [];
@@ -75,17 +94,39 @@ export default function TeacherConsultModal({
     return items.length ? items.join(", ") : "-";
   }, [consult?.form?.inquiry]);
 
-  const handleDecline = async () => {
+  // helper to write a notification to the student's feed
+  const writeNotification = async (payload) => {
+    try {
+      const targetUserId =
+        consult?.studentId || consult?.form?.studentId || payload.userId;
+      if (!targetUserId) return;
+      await addDoc(collection(db, "notifications"), {
+        userId: targetUserId,
+        createdAt: serverTimestamp(),
+        createdAtMs: Date.now(),
+        read: false,
+        ...payload,
+      });
+    } catch (err) {
+      console.warn("[notif] add failed:", err?.message || err);
+    }
+  };
+
+  // DECLINE — now accepts a reason, notifies student, and frees slot (white)
+  const handleDecline = async (reasonText) => {
     if (!consult) return;
     setSaving(true);
     try {
+      const reason = String(reasonText || "").trim();
+
       await updateDoc(doc(db, "consultations", consult.id), {
         status: "declined_by_teacher",
         declinedAt: serverTimestamp(),
+        declinedReason: reason || null,
         teacherSignature: null,
       });
 
-      // free slot (white)
+      // free slot (white) regardless of how modal was opened
       if (teacherId && (consult.day || consult.form?.date) && (consult.time || consult.form?.time)) {
         const day = consult.day || consult.form?.date;
         const time = consult.time || consult.form?.time;
@@ -96,6 +137,19 @@ export default function TeacherConsultModal({
         grid[day][time] = "white";
         await setDoc(schedRef, { grid }, { merge: true });
       }
+
+      // notify student with reason
+      await writeNotification({
+        title: "Consultation declined",
+        message:
+          `Your request for ${consult.form?.date || consult.day} at ` +
+          `${consult.form?.time || consult.time} was declined.` +
+          (reason ? ` Reason: ${reason}` : ""),
+        type: "consultation_declined",
+        consultationId: consult.id,
+        teacherId: teacherId || consult.teacherId,
+        reason: reason || null,
+      });
 
       Alert.alert("Declined", "The request has been declined.");
       onClose?.({ shouldReload: true });
@@ -112,12 +166,23 @@ export default function TeacherConsultModal({
     if (!consult) return;
     setSaving(true);
     try {
+      // save status + signature
       await updateDoc(doc(db, "consultations", consult.id), {
         status: "signed_by_teacher",
         signedAt: serverTimestamp(),
         teacherSignature: { base64: sigPngBase64, mime: "image/png", ts: serverTimestamp() },
       });
 
+      // notify the student
+      await writeNotification({
+        title: "Consultation accepted",
+        message: `Your request for ${consult.form?.date || consult.day} at ${consult.form?.time || consult.time} with ${consult.form?.consultantName || ""} was accepted.`,
+        type: "consultation_accepted",
+        consultationId: consult.id,
+        teacherId: teacherId || consult.teacherId,
+      });
+
+      // build + offer PDF
       const c = consult;
       const pdfPath = await generatePrefilledPDF(
         {
@@ -140,35 +205,30 @@ export default function TeacherConsultModal({
         {
           teacherSignature: { base64: sigPngBase64, mime: "image/png" },
           dateSigned: new Date().toLocaleDateString(),
-          // defaults for placement are locked in the utils file
         }
       );
 
-      Alert.alert(
-        "PDF copy",
-        "Do you want a PDF copy of this signed form?",
-        [
-          { text: "No", style: "cancel" },
-          {
-            text: "Yes",
-            onPress: async () => {
-              try {
-                const ok = await Sharing.isAvailableAsync();
-                if (ok) {
-                  await Sharing.shareAsync(pdfPath, {
-                    mimeType: "application/pdf",
-                    dialogTitle: "Signed Consultation Form",
-                  });
-                } else {
-                  Alert.alert("Saved locally", pdfPath);
-                }
-              } catch (e) {
-                Alert.alert("Sharing error", String(e?.message || e));
+      Alert.alert("PDF copy", "Do you want a PDF copy of this signed form?", [
+        { text: "No", style: "cancel" },
+        {
+          text: "Yes",
+          onPress: async () => {
+            try {
+              const ok = await Sharing.isAvailableAsync();
+              if (ok) {
+                await Sharing.shareAsync(pdfPath, {
+                  mimeType: "application/pdf",
+                  dialogTitle: "Signed Consultation Form",
+                });
+              } else {
+                Alert.alert("Saved locally", pdfPath);
               }
-            },
+            } catch (e) {
+              Alert.alert("Sharing error", String(e?.message || e));
+            }
           },
-        ]
-      );
+        },
+      ]);
 
       Alert.alert("Signed", "Signature saved and consultation approved.");
       onClose?.({ shouldReload: true });
@@ -185,20 +245,10 @@ export default function TeacherConsultModal({
   return (
     <Modal visible={!!visible} transparent animationType="fade" onRequestClose={closeModal}>
       <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.5)", justifyContent: "center", alignItems: "center", padding: 16 }}>
-        <View
-          style={{
-            width: "95%",
-            maxHeight: "90%",
-            backgroundColor: "white",
-            borderRadius: 12,
-            padding: 16,
-          }}
-        >
+        <View style={{ width: "95%", maxHeight: "90%", backgroundColor: "white", borderRadius: 12, padding: 16 }}>
           <View style={{ flexDirection: "row", justifyContent: "space-between", marginBottom: 8 }}>
             <Text style={{ fontSize: 16, fontWeight: "bold" }}>Consultation Details</Text>
-            <TouchableOpacity onPress={closeModal}>
-              <Text style={{ fontSize: 14, color: "#2563eb" }}>Close</Text>
-            </TouchableOpacity>
+            <TouchableOpacity onPress={closeModal}><Text style={{ fontSize: 14, color: "#2563eb" }}>Close</Text></TouchableOpacity>
           </View>
 
           {loading ? (
@@ -208,17 +258,7 @@ export default function TeacherConsultModal({
           ) : mode === "sign" ? (
             <View>
               <Text style={{ marginBottom: 8 }}>Draw your signature below:</Text>
-
-              <View
-                style={{
-                  height: 260,
-                  borderWidth: 1,
-                  borderColor: "#ddd",
-                  borderRadius: 12,
-                  overflow: "hidden",
-                  backgroundColor: "white",
-                }}
-              >
+              <View style={{ height: 260, borderWidth: 1, borderColor: "#ddd", borderRadius: 12, overflow: "hidden", backgroundColor: "white" }}>
                 <Signature
                   ref={sigRef}
                   onOK={handleOK}
@@ -238,11 +278,7 @@ export default function TeacherConsultModal({
                   autoClear={false}
                 />
               </View>
-
-              <Text style={{ textAlign: "center", color: "#6b7280", fontSize: 12, marginTop: 8 }}>
-                Sign here
-              </Text>
-
+              <Text style={{ textAlign: "center", color: "#6b7280", fontSize: 12, marginTop: 8 }}>Sign here</Text>
               <View style={{ flexDirection: "row", gap: 8, marginTop: 8 }}>
                 <TouchableOpacity
                   onPress={() => sigRef.current?.clearSignature?.()}
@@ -276,7 +312,7 @@ export default function TeacherConsultModal({
 
               <View style={{ flexDirection: "row", marginTop: 12 }}>
                 <TouchableOpacity
-                  onPress={handleDecline}
+                  onPress={() => setDeclineOpen(true)}
                   style={{ flex: 1, paddingVertical: 12, marginRight: 8, backgroundColor: "#ef4444", borderRadius: 8, alignItems: "center" }}
                   disabled={saving}
                 >
@@ -294,6 +330,57 @@ export default function TeacherConsultModal({
           )}
         </View>
       </View>
+
+      {/* Decline reason modal */}
+      <Modal
+        visible={declineOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setDeclineOpen(false)}
+      >
+        <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.45)", justifyContent: "center", padding: 16 }}>
+          <View style={{ backgroundColor: "white", borderRadius: 12, padding: 16 }}>
+            <Text style={{ fontSize: 16, fontWeight: "700", marginBottom: 8 }}>Reason for decline</Text>
+            <TextInput
+              placeholder="Type your reason…"
+              value={declineReason}
+              onChangeText={setDeclineReason}
+              multiline
+              style={{
+                minHeight: 80,
+                borderWidth: 1,
+                borderColor: "#e5e7eb",
+                borderRadius: 8,
+                padding: 10,
+                textAlignVertical: "top",
+              }}
+            />
+            <View style={{ flexDirection: "row", gap: 10, marginTop: 12 }}>
+              <TouchableOpacity
+                onPress={() => setDeclineOpen(false)}
+                style={{ flex: 1, paddingVertical: 10, borderRadius: 8, backgroundColor: "#e5e7eb", alignItems: "center" }}
+              >
+                <Text style={{ fontWeight: "600" }}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={() => {
+                  const r = declineReason.trim();
+                  if (!r) {
+                    Alert.alert("Reason required", "Please enter a short reason for declining.");
+                    return;
+                  }
+                  setDeclineOpen(false);
+                  handleDecline(r);
+                }}
+                disabled={saving}
+                style={{ flex: 1, paddingVertical: 10, borderRadius: 8, backgroundColor: "#ef4444", alignItems: "center" }}
+              >
+                <Text style={{ fontWeight: "700", color: "white" }}>Decline</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </Modal>
   );
 }

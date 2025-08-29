@@ -1,4 +1,5 @@
 // app/teacher-dashboard.js
+import { Ionicons } from "@expo/vector-icons";
 import * as DocumentPicker from "expo-document-picker";
 import * as FileSystem from "expo-file-system";
 import * as ImagePicker from "expo-image-picker";
@@ -10,16 +11,21 @@ import {
   getDoc,
   getDocs,
   limit,
+  onSnapshot,
+  orderBy,
   query,
   serverTimestamp,
   setDoc,
+  updateDoc,
   where,
 } from "firebase/firestore";
-import { useEffect, useLayoutEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useState } from "react";
 import {
   Alert,
   Image,
   Modal,
+  Platform,
+  ScrollView,
   Text,
   TextInput,
   TouchableOpacity,
@@ -34,43 +40,107 @@ import uploadToCloudinary from "./utils/uploadToCloudinary";
 
 const norm = (s = "") => String(s).replace(/–/g, "-").replace(/\s+/g, "").toLowerCase();
 
+/* ---------- Custom Header (prevents icon clipping) ---------- */
+function TeacherHeader({ unreadCount, onOpenNotifs, onOpenSettings, onOpenClasses }) {
+  return (
+    <View
+      style={{
+        height: 82,
+        backgroundColor: "#fff",
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "space-between",
+        paddingHorizontal: 16,
+        paddingTop: Platform.OS === "android" ? 4 : 0,
+        borderBottomWidth: 1,
+        borderBottomColor: "#eee",
+      }}
+    >
+      <Text style={{ fontSize: 22, fontWeight: "800" }}>Teacher Dashboard</Text>
+
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 16 }}>
+        <TouchableOpacity
+          onPress={onOpenClasses}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+        >
+          <Text style={{ color: "#2563eb", fontWeight: "600" }}>My Classes</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          onPress={onOpenNotifs}
+          style={{ position: "relative" }}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+        >
+          <Ionicons name="notifications-outline" size={26} />
+          {!!unreadCount && (
+            <View
+              style={{
+                position: "absolute",
+                right: -2,
+                top: -2,
+                width: 10,
+                height: 10,
+                backgroundColor: "#ef4444",
+                borderRadius: 5,
+              }}
+            />
+          )}
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          onPress={onOpenSettings}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+        >
+          <Ionicons name="settings-outline" size={26} />
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+}
+
 export default function TeacherDashboard() {
   const [grid, setGrid] = useState(null);
   const [hasSchedule, setHasSchedule] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
+
+  // settings drawer
   const [settingsVisible, setSettingsVisible] = useState(false);
   const [displayName, setDisplayName] = useState("");
   const [photoURL, setPhotoURL] = useState("");
 
-  // modal state for yellow tap
+  // yellow tap modal
   const [consultationId, setConsultationId] = useState(null);
   const [teacherModalOpen, setTeacherModalOpen] = useState(false);
-  const [lastTap, setLastTap] = useState(null); // {day, slot}
+  const [lastTap, setLastTap] = useState(null); // { day, slot }
+
+  // notifications (teacher)
+  const [notifs, setNotifs] = useState([]);
+  const [showNotifs, setShowNotifs] = useState(false);
 
   const auth = getAuth();
   const user = auth.currentUser;
   const uid = user?.uid;
   const navigation = useNavigation();
 
+  const unreadCount = useMemo(() => notifs.filter((n) => !n.read).length, [notifs]);
+
+  /* ---------- Use the custom header (like student screen) ---------- */
   useLayoutEffect(() => {
     navigation.setOptions({
-      headerTitle: "Teacher Dashboard",
-      headerRight: () => (
-        <View style={{ flexDirection: "row", gap: 15, marginRight: 10 }}>
-          <TouchableOpacity onPress={() => navigation.navigate("my-classes")}>
-            <Text style={{ color: "#007bff" }}>My Classes</Text>
-          </TouchableOpacity>
-          <TouchableOpacity onPress={() => Alert.alert("Notifications")}>
-            <Text style={{ fontSize: 18 }}>🔔</Text>
-          </TouchableOpacity>
-          <TouchableOpacity onPress={() => setSettingsVisible(true)}>
-            <Text style={{ fontSize: 18 }}>⚙️</Text>
-          </TouchableOpacity>
-        </View>
+      headerTitle: "",
+      headerShadowVisible: true,
+      header: () => (
+        <TeacherHeader
+          unreadCount={unreadCount}
+          onOpenNotifs={() => setShowNotifs(true)}
+          onOpenSettings={() => setSettingsVisible(true)}
+          onOpenClasses={() => navigation.navigate("my-classes")}
+        />
       ),
     });
-  }, [navigation]);
+  }, [navigation, unreadCount]);
 
+  // ---- Load schedule + profile bits ----
   useEffect(() => {
     if (!uid) return;
     (async () => {
@@ -85,13 +155,102 @@ export default function TeacherDashboard() {
     })();
   }, [uid]);
 
+  // ---- Live teacher notifications ----
+  useEffect(() => {
+    if (!uid) return;
+    const q = query(
+      collection(db, "notifications"),
+      where("userId", "==", uid),
+      orderBy("createdAt", "desc")
+    );
+    const unsub = onSnapshot(q, (snap) => {
+      setNotifs(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    });
+    return unsub;
+  }, [uid]);
+
+  const markAllRead = async () => {
+    const unread = notifs.filter((n) => !n.read);
+    await Promise.all(
+      unread.map((n) =>
+        updateDoc(doc(db, "notifications", n.id), { read: true, readAt: serverTimestamp() })
+      )
+    );
+  };
+
+  /* ---------- helpers to extract / update cell ---------- */
+  const extractDaySlot = (consultData) => {
+    const day = consultData?.day || consultData?.form?.date || null;
+    const slot = consultData?.time || consultData?.form?.time || null;
+    return { day, slot };
+  };
+
+  const updateCellBlue = async (day, slot) => {
+    if (!grid || !day || !slot) return false;
+    const g = { ...(grid || {}) };
+    const dayRow = g[day];
+    if (!dayRow) return false;
+
+    // exact key
+    let key = slot;
+    if (!dayRow[key]) {
+      // normalize to find matching slot label
+      const match = Object.keys(dayRow).find((k) => norm(k) === norm(slot));
+      if (!match) return false;
+      key = match;
+    }
+
+    if (dayRow[key]) {
+      g[day] = { ...dayRow, [key]: "blue" };
+      await setDoc(doc(db, "schedules", uid), { grid: g }, { merge: true });
+      setGrid(g);
+      return true;
+    }
+    return false;
+  };
+
+  const openNotif = async (n) => {
+    setShowNotifs(false);
+    try {
+      // mark read
+      if (!n.read) {
+        await updateDoc(doc(db, "notifications", n.id), { read: true, readAt: serverTimestamp() });
+      }
+
+      if (n.consultationId) {
+        // prefetch to capture day/slot for auto-blue after signing
+        try {
+          const snap = await getDoc(doc(db, "consultations", n.consultationId));
+          if (snap.exists()) {
+            const { day, slot } = extractDaySlot(snap.data());
+            if (day && slot) setLastTap({ day, slot });
+          }
+        } catch {}
+
+        setConsultationId(n.consultationId);
+        setTeacherModalOpen(true);
+        return;
+      }
+
+      // Fallback: open by day+time stored on notif
+      if (n.day && n.time) {
+        setLastTap({ day: n.day, slot: n.time });
+        onOpenTeacherConsultModal({ day: n.day, slot: n.time });
+        return;
+      }
+
+      Alert.alert(n.title || "Notification", n.message || "");
+    } catch (e) {
+      Alert.alert("Error", String(e?.message || e));
+    }
+  };
+
   // ---------- Teacher: tap yellow -> open modal ----------
   const onOpenTeacherConsultModal = async ({ day, slot }) => {
     try {
       if (!uid) return;
       setLastTap({ day, slot });
 
-      // exact match first
       let q1 = query(
         collection(db, "consultations"),
         where("teacherId", "==", uid),
@@ -101,7 +260,6 @@ export default function TeacherDashboard() {
       );
       let qs = await getDocs(q1);
 
-      // fallback: normalize time text
       if (qs.empty) {
         const q2 = query(
           collection(db, "consultations"),
@@ -131,18 +289,24 @@ export default function TeacherDashboard() {
 
     try {
       if (!consultationId) return;
+
       const snap = await getDoc(doc(db, "consultations", consultationId));
       const d = snap.exists() ? snap.data() : null;
 
-      // if teacher signed, turn that cell blue
-      if (d && String(d.status || "").toLowerCase() === "signed_by_teacher" && lastTap) {
-        const newGrid = { ...(grid || {}) };
-        const { day, slot } = lastTap;
-        if (newGrid?.[day]?.[slot]) {
-          newGrid[day][slot] = "blue";
-          await setDoc(doc(db, "schedules", uid), { grid: newGrid }, { merge: true });
-          setGrid(newGrid);
+      const status = String(d?.status || "").toLowerCase();
+      if (d && status === "signed_by_teacher") {
+        // Prefer the slot captured when opening; otherwise derive from doc
+        let day = lastTap?.day;
+        let slot = lastTap?.slot;
+
+        if (!day || !slot) {
+          const derived = extractDaySlot(d);
+          day = derived.day;
+          slot = derived.slot;
         }
+
+        // Update grid to blue (robust matching)
+        await updateCellBlue(day, slot);
       }
     } finally {
       setConsultationId(null);
@@ -201,13 +365,24 @@ export default function TeacherDashboard() {
     setShowConfirm(true);
   };
 
+  // ✅ Step 5: Save grid AND capture `defaultGrid` once (if missing)
   const handleConfirm = async () => {
     if (!uid || !grid) return;
-    await setDoc(doc(db, "schedules", uid), { grid, uploadedAt: serverTimestamp() });
+
+    const schedRef = doc(db, "schedules", uid);
+    const existing = await getDoc(schedRef);
+
+    const payload = { grid, uploadedAt: serverTimestamp() };
+    if (!existing.exists() || !existing.data()?.defaultGrid) {
+      payload.defaultGrid = grid; // baseline saved once
+    }
+
+    await setDoc(schedRef, payload, { merge: true });
     Alert.alert("Saved", "Schedule updated.");
     setShowConfirm(false);
   };
 
+  // ---- Settings actions ----
   const handleSaveSettings = async () => {
     try {
       await updateProfile(user, { displayName });
@@ -260,12 +435,7 @@ export default function TeacherDashboard() {
       {!hasSchedule ? (
         <TouchableOpacity
           onPress={handleUpload}
-          style={{
-            backgroundColor: "#2196F3",
-            padding: 12,
-            borderRadius: 6,
-            alignItems: "center",
-          }}
+          style={{ backgroundColor: "#2196F3", padding: 12, borderRadius: 6, alignItems: "center" }}
         >
           <Text style={{ color: "#fff" }}>Upload your current schedule</Text>
         </TouchableOpacity>
@@ -273,8 +443,8 @@ export default function TeacherDashboard() {
         <>
           <ScheduleGrid
             grid={grid}
-            onSelectBlock={handleBlockSelect}            // keep edit modal
-            onOpenTeacherConsultModal={onOpenTeacherConsultModal} // yellow tap -> modal
+            onSelectBlock={handleBlockSelect}
+            onOpenTeacherConsultModal={onOpenTeacherConsultModal}
           />
           {showConfirm && (
             <TouchableOpacity
@@ -293,13 +463,63 @@ export default function TeacherDashboard() {
         </>
       )}
 
+      {/* Teacher Consult modal */}
       {teacherModalOpen && (
         <TeacherConsultModal
           visible={teacherModalOpen}
           onClose={handleModalClose}
           consultationId={consultationId}
+          teacherId={uid}
         />
       )}
+
+      {/* Notifications modal */}
+      <Modal
+        visible={showNotifs}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowNotifs(false)}
+      >
+        <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.45)", justifyContent: "center", padding: 16 }}>
+          <View style={{ backgroundColor: "white", borderRadius: 12, maxHeight: "80%", padding: 14 }}>
+            <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+              <Text style={{ fontSize: 16, fontWeight: "700" }}>Notifications</Text>
+              <View style={{ flexDirection: "row", gap: 12 }}>
+                <TouchableOpacity onPress={markAllRead} disabled={!unreadCount}>
+                  <Text style={{ color: unreadCount ? "#2563eb" : "#9ca3af", fontWeight: "600" }}>
+                    Mark all read
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity onPress={() => setShowNotifs(false)}>
+                  <Text style={{ color: "#2563eb", fontWeight: "600" }}>Close</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            <ScrollView>
+              {notifs.length === 0 ? (
+                <Text style={{ color: "#6b7280" }}>No notifications yet.</Text>
+              ) : (
+                notifs.map((n) => (
+                  <TouchableOpacity
+                    key={n.id}
+                    onPress={() => openNotif(n)}
+                    style={{
+                      paddingVertical: 10,
+                      borderBottomWidth: 1,
+                      borderBottomColor: "#f3f4f6",
+                      opacity: n.read ? 0.6 : 1,
+                    }}
+                  >
+                    <Text style={{ fontWeight: "600" }}>{n.title || "Notification"}</Text>
+                    <Text style={{ color: "#374151" }}>{n.message}</Text>
+                  </TouchableOpacity>
+                ))
+              )}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
 
       {/* Settings Drawer */}
       <Modal

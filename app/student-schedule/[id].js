@@ -12,7 +12,7 @@ import {
   serverTimestamp,
   setDoc,
 } from "firebase/firestore";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -28,6 +28,19 @@ import {
 import ScheduleGrid from "../../components/ScheduleGrid";
 import db from "../../constants/firestore";
 import { generatePrefilledPDF } from "../utils/generatePrefilledPdf";
+
+
+/** ==== SWITCH: set to true/false to enable/disable grey + block past days ==== */
+const GREY_PAST_DAYS_ENABLED = false;
+/** ========================================================================== */
+
+const WEEK = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
+const isPastDayThisWeek = (dayName) => {
+  const idx = WEEK.indexOf(dayName);
+  if (idx === -1) return false;
+  const todayIdx = new Date().getDay(); // 0=Sun ... 6=Sat
+  return idx < todayIdx; // e.g. Wed(3) disables Mon(1), Tue(2)
+};
 
 export default function StudentScheduleScreen() {
   const { id: teacherIdParam } = useLocalSearchParams();
@@ -106,10 +119,15 @@ export default function StudentScheduleScreen() {
     </TouchableOpacity>
   );
 
-  // ========== STUDENT: tap white -> open details form ==========
+  // 🔒 Guard: students can only request white slots; when switch is ON, block past days
   const handleRequestBlock = async (day, time) => {
     const currentUser = auth.currentUser;
     if (!currentUser?.uid) return Alert.alert("Sign in required", "Please log in first.");
+
+    if (GREY_PAST_DAYS_ENABLED && isPastDayThisWeek(day)) {
+      return Alert.alert("Past day", "You can only request current or future days.");
+    }
+
     if (grid?.[day]?.[time] !== "white")
       return Alert.alert("Unavailable", "Pick an available (white) slot.");
 
@@ -236,6 +254,24 @@ export default function StudentScheduleScreen() {
     }
   };
 
+  // 🎨 Build a display-only grid that greys out ALL colors on past days (when switch ON)
+  const displayGrid = useMemo(() => {
+    if (!grid) return null;
+
+    if (!GREY_PAST_DAYS_ENABLED) return grid; // switch OFF → show original colors
+
+    const clone = JSON.parse(JSON.stringify(grid));
+    Object.keys(clone || {}).forEach((day) => {
+      if (!isPastDayThisWeek(day)) return;
+      const daySlots = clone[day] || {};
+      Object.keys(daySlots).forEach((time) => {
+        const v = daySlots[time];
+        if (v != null) daySlots[time] = "#e5e7eb"; // grey, regardless of original color
+      });
+    });
+    return clone;
+  }, [grid]);
+
   if (loading) return <ActivityIndicator style={{ marginTop: 50 }} />;
 
   return (
@@ -244,16 +280,16 @@ export default function StudentScheduleScreen() {
         {grid ? "View Schedule" : "No Schedule Found"}
       </Text>
 
-      {grid && (
+      {displayGrid && (
         <ScheduleGrid
-          grid={grid}
-          readonly={true}                 // student view only
-          onRequestBlock={handleRequestBlock}
+          grid={displayGrid}          // display grid (may be greyed)
+          readonly={true}             // student view only (no teacher editing)
+          onRequestBlock={handleRequestBlock} // booking handler
           onOpenTeacherConsultModal={undefined}
         />
       )}
 
-      {/* Student form modal (same UI you shared) */}
+      {/* Student form modal */}
       <Modal visible={showForm} transparent animationType="fade">
         <KeyboardAvoidingView
           behavior={Platform.OS === "ios" ? "padding" : undefined}
@@ -318,7 +354,7 @@ export default function StudentScheduleScreen() {
                 <TextInput value={form.duration} editable={false}
                   style={{ borderWidth: 1, borderRadius: 8, padding: 8, marginBottom: 8, backgroundColor: "#f3f4f6" }} />
 
-                {/* Inquiry + Methods (unchanged) */}
+                {/* Inquiry */}
                 <Text style={{ marginTop: 6, marginBottom: 2 }}>Nature of your inquiry</Text>
                 {[
                   ["Class Advising", "classAdvising"],
@@ -356,6 +392,7 @@ export default function StudentScheduleScreen() {
                   )}
                 </View>
 
+                {/* Methods */}
                 <Text style={{ marginTop: 12, marginBottom: 2 }}>Method of Consultation</Text>
                 {[
                   ["Video Conferencing", "video"],
