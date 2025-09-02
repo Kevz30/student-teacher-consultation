@@ -18,9 +18,11 @@ import {
 
 import { getAuth } from "firebase/auth";
 import {
+  addDoc,
   collection,
   doc,
   getDoc,
+  getDoc as getDocOnce,
   onSnapshot,
   orderBy,
   query,
@@ -128,6 +130,9 @@ export default function StudentDashboard() {
   const [showNotifs, setShowNotifs] = useState(false);
   const [loading, setLoading] = useState(true);
 
+  // NEW: we keep the student's consultations in memory for the watcher
+  const [myConsultations, setMyConsultations] = useState([]);
+
   const auth = getAuth();
   const uid = auth.currentUser?.uid;
 
@@ -214,6 +219,62 @@ export default function StudentDashboard() {
     });
   }, [navigation, unreadCount]);
 
+  /* ---------- NEW: subscribe to student's consultations ---------- */
+  useEffect(() => {
+    if (!uid) return;
+    const q = query(collection(db, "consultations"), where("studentId", "==", uid));
+    const unsub = onSnapshot(q, (snap) => {
+      setMyConsultations(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    });
+    return unsub;
+  }, [uid]);
+
+  /* ---------- NEW: background checker to dispatch outcome requests ---------- */
+  useEffect(() => {
+    if (!uid) return;
+    // Check every 30s (change to 5000 for dev if you want faster)
+    const interval = setInterval(async () => {
+      const now = Date.now();
+      const due = myConsultations.filter((c) => {
+        const status = String(c.status || "").toLowerCase();
+        return (
+          status === "signed_by_teacher" &&
+          typeof c.endAtMs === "number" &&
+          c.endAtMs <= now &&
+          !c.outcomeDispatched
+        );
+      });
+
+      for (const c of due) {
+        try {
+          const ref = doc(db, "consultations", c.id);
+          // double-check latest server state to avoid duplicates
+          const fresh = await getDocOnce(ref);
+          const data = fresh.exists() ? fresh.data() : null;
+          if (!data || data.outcomeDispatched) continue;
+
+          await Promise.all([
+            addDoc(collection(db, "notifications"), {
+              userId: uid,
+              title: "Add outcome notes",
+              message: `Please add outcome notes for ${data?.form?.date || data?.day} at ${data?.form?.time || data?.time}.`,
+              type: "consultation_outcome_request",
+              consultationId: c.id,
+              createdAt: serverTimestamp(),
+              createdAtMs: Date.now(),
+              read: false,
+            }),
+            updateDoc(ref, { outcomeDispatched: true }),
+          ]);
+        } catch (e) {
+          // noop: best-effort
+        }
+      }
+    }, 30000);
+
+    return () => clearInterval(interval);
+  }, [uid, myConsultations]);
+
   /* ---------- Helpers ---------- */
   const openNotifs = async () => {
     setShowNotifs(true);
@@ -242,6 +303,28 @@ export default function StudentDashboard() {
           updateDoc(doc(db, "notifications", n.id), { read: true, readAt: serverTimestamp() })
         )
       );
+    } catch {}
+  };
+
+  // NEW: tap a notification
+  const openNotif = async (n) => {
+    try {
+      if (!n.read) {
+        await updateDoc(doc(db, "notifications", n.id), { read: true, readAt: serverTimestamp() });
+        setNotifs((prev) => prev.map((x) => (x.id === n.id ? { ...x, read: true } : x)));
+      }
+
+      if (n.type === "consultation_outcome_request" && n.consultationId) {
+        // Step 3 will open a real modal to collect notes & upload to Cloudinary.
+        Alert.alert(
+          "Outcome notes",
+          "This is where you'll fill your notes. We’ll add the form in the next step."
+        );
+        return;
+      }
+
+      // default
+      Alert.alert(n.title || "Notification", n.message || "");
     } catch {}
   };
 
@@ -322,8 +405,9 @@ export default function StudentDashboard() {
                 <Text style={{ color: "#6b7280" }}>No notifications yet.</Text>
               ) : (
                 notifs.map((n) => (
-                  <View
+                  <TouchableOpacity
                     key={n.id}
+                    onPress={() => openNotif(n)}
                     style={{
                       paddingVertical: 10,
                       borderBottomWidth: 1,
@@ -333,7 +417,7 @@ export default function StudentDashboard() {
                   >
                     <Text style={{ fontWeight: "600" }}>{n.title || "Notification"}</Text>
                     <Text style={{ color: "#374151" }}>{n.message}</Text>
-                  </View>
+                  </TouchableOpacity>
                 ))
               )}
             </ScrollView>

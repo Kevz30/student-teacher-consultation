@@ -369,15 +369,20 @@ export default function TeacherDashboard() {
   const handleConfirm = async () => {
     if (!uid || !grid) return;
 
-    const schedRef = doc(db, "schedules", uid);
-    const existing = await getDoc(schedRef);
+    const ref = doc(db, "schedules", uid);
+    const snap = await getDoc(ref);
 
-    const payload = { grid, uploadedAt: serverTimestamp() };
-    if (!existing.exists() || !existing.data()?.defaultGrid) {
-      payload.defaultGrid = grid; // baseline saved once
+    const payload = {
+      grid,
+      uploadedAt: serverTimestamp(),
+    };
+
+    // create defaultGrid only once
+    if (!snap.exists() || !snap.data()?.defaultGrid) {
+      payload.defaultGrid = grid;
     }
 
-    await setDoc(schedRef, payload, { merge: true });
+    await setDoc(ref, payload, { merge: true });
     Alert.alert("Saved", "Schedule updated.");
     setShowConfirm(false);
   };

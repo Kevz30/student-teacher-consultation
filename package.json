@@ -41,6 +41,7 @@
     "expo-system-ui": "~5.0.10",
     "expo-web-browser": "~14.2.0",
     "firebase": "^11.10.0",
+    "firebase-admin": "^13.5.0",
     "formdata-polyfill": "^4.0.10",
     "pdf-lib": "^1.17.1",
     "react": "19.0.0",

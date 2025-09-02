@@ -173,86 +173,107 @@ export default function StudentScheduleScreen() {
   };
 
   const submitConsultation = async () => {
-    const currentUser = auth.currentUser;
-    if (!currentUser?.uid) return;
+  const currentUser = auth.currentUser;
+  if (!currentUser?.uid) return;
 
+  try {
+    // 1) Create the consultation
+    const ref = await addDoc(collection(db, "consultations"), {
+      teacherId,
+      studentId: currentUser.uid,
+      day: form.date,
+      time: form.time,
+      status: "pending_teacher",
+      createdAt: serverTimestamp(),
+      form,
+    });
+
+    // 2) 🔔 Notify the TEACHER
     try {
-      await addDoc(collection(db, "consultations"), {
+      await addDoc(collection(db, "notifications"), {
+        userId: teacherId,                              // <-- teacher sees it
+        title: "New consultation request",
+        message: `${form.nameClient || "A student"} requested ${form.date} at ${form.time}. Tap to review.`,
+        type: "consultation_request",
+        consultationId: ref.id,                         // <-- lets the bell open the modal
         teacherId,
         studentId: currentUser.uid,
         day: form.date,
         time: form.time,
-        status: "pending_teacher",
         createdAt: serverTimestamp(),
-        form,
+        createdAtMs: Date.now(),
+        read: false,
       });
-
-      const newGrid = { ...grid };
-      newGrid[form.date][form.time] = "yellow";
-      await setDoc(doc(db, "schedules", teacherId), { grid: newGrid }, { merge: true });
-      setGrid(newGrid);
-      setShowForm(false);
-
-      Alert.alert("PDF copy", "Do you want a PDF copy of this form?", [
-        {
-          text: "No",
-          style: "cancel",
-          onPress: () => Alert.alert("Submitted", "Your consultation request is now pending."),
-        },
-        {
-          text: "Yes",
-          onPress: async () => {
-            try {
-              const [studentSnap, teacherSnap] = await Promise.all([
-                getDoc(doc(db, "students", currentUser.uid)),
-                getDoc(doc(db, "instructors", teacherId)),
-              ]);
-              const s = studentSnap.data() || {};
-              const t = teacherSnap.data() || {};
-
-              const pdfPath = await generatePrefilledPDF(
-                {
-                  fullName: form.nameClient || s.fullName || s.displayName || "",
-                  studentNumber: form.studentNumber || s.studentNumber || "",
-                  course: form.program || s.course || "",
-                },
-                {
-                  fullName: form.consultantName || t.displayName || t.fullName || "",
-                },
-                { day: form.date, time: form.time },
-                {
-                  office: form.office,
-                  date: form.date,
-                  duration: form.duration,
-                  yearSection: form.yearSection,
-                  contactNumber: form.contactNumber,
-                  methods: form.methods,
-                  inquiry: form.inquiry,
-                },
-                `${currentUser.uid}_${teacherId}_${form.date}_${form.time}.pdf`
-              );
-
-              const canShare = await Sharing.isAvailableAsync();
-              if (canShare) {
-                await Sharing.shareAsync(pdfPath, {
-                  mimeType: "application/pdf",
-                  dialogTitle: "Your PDF copy",
-                });
-              } else {
-                Alert.alert("Saved", `Saved to: ${pdfPath}`);
-              }
-            } catch (err) {
-              Alert.alert("Error", "Could not create the PDF copy.");
-            } finally {
-              Alert.alert("Submitted", "Your consultation request is now pending.");
-            }
-          },
-        },
-      ]);
     } catch (e) {
-      Alert.alert("Error", "Could not submit the consultation request.");
+      console.warn("[notif->teacher] failed:", e?.message || e);
     }
-  };
+
+    // 3) Turn the slot yellow
+    const newGrid = { ...grid };
+    newGrid[form.date][form.time] = "yellow";
+    await setDoc(doc(db, "schedules", teacherId), { grid: newGrid }, { merge: true });
+    setGrid(newGrid);
+    setShowForm(false);
+
+    // 4) (existing) PDF prompt flow…
+    Alert.alert("PDF copy", "Do you want a PDF copy of this form?", [
+      {
+        text: "No",
+        style: "cancel",
+        onPress: () => Alert.alert("Submitted", "Your consultation request is now pending."),
+      },
+      {
+        text: "Yes",
+        onPress: async () => {
+          try {
+            const [studentSnap, teacherSnap] = await Promise.all([
+              getDoc(doc(db, "students", currentUser.uid)),
+              getDoc(doc(db, "instructors", teacherId)),
+            ]);
+            const s = studentSnap.data() || {};
+            const t = teacherSnap.data() || {};
+
+            const pdfPath = await generatePrefilledPDF(
+              {
+                fullName: form.nameClient || s.fullName || s.displayName || "",
+                studentNumber: form.studentNumber || s.studentNumber || "",
+                course: form.program || s.course || "",
+              },
+              { fullName: form.consultantName || t.displayName || t.fullName || "" },
+              { day: form.date, time: form.time },
+              {
+                office: form.office,
+                date: form.date,
+                duration: form.duration,
+                yearSection: form.yearSection,
+                contactNumber: form.contactNumber,
+                methods: form.methods,
+                inquiry: form.inquiry,
+              },
+              `${currentUser.uid}_${teacherId}_${form.date}_${form.time}.pdf`
+            );
+
+            const canShare = await Sharing.isAvailableAsync();
+            if (canShare) {
+              await Sharing.shareAsync(pdfPath, {
+                mimeType: "application/pdf",
+                dialogTitle: "Your PDF copy",
+              });
+            } else {
+              Alert.alert("Saved", `Saved to: ${pdfPath}`);
+            }
+          } catch (err) {
+            Alert.alert("Error", "Could not create the PDF copy.");
+          } finally {
+            Alert.alert("Submitted", "Your consultation request is now pending.");
+          }
+        },
+      },
+    ]);
+  } catch (e) {
+    Alert.alert("Error", "Could not submit the consultation request.");
+  }
+};
 
   // 🎨 Build a display-only grid that greys out ALL colors on past days (when switch ON)
   const displayGrid = useMemo(() => {

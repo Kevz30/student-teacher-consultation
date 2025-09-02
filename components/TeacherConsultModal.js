@@ -24,6 +24,53 @@ import Signature from "react-native-signature-canvas";
 import { generatePrefilledPDF } from "../app/utils/generatePrefilledPdf";
 import db from "../constants/firestore";
 
+/* ===================== time helpers (Step 1) ===================== */
+const DAY_INDEX = {
+  Sunday: 0, Monday: 1, Tuesday: 2, Wednesday: 3,
+  Thursday: 4, Friday: 5, Saturday: 6,
+};
+
+function parseRange(range = "") {
+  // "9:30-10:00" → { sh:9, sm:30, eh:10, em:0 }
+  const [s, e] = String(range).split("-").map(t => t.trim());
+  const [sh, sm = 0] = (s || "").split(":").map(Number);
+  const [eh, em = 0] = (e || "").split(":").map(Number);
+  return { sh, sm, eh, em };
+}
+
+function computeSlotMs(dayLabel, timeRange) {
+  const { sh, sm, eh, em } = parseRange(timeRange);
+  const now = new Date();
+  const target = new Date(now);
+  const want = DAY_INDEX[dayLabel] ?? now.getDay();
+  const diffDays = (want - now.getDay() + 7) % 7; // 0..6
+  target.setHours(0, 0, 0, 0);
+  target.setDate(target.getDate() + diffDays);
+
+  const start = new Date(target);
+  start.setHours(sh || 0, sm || 0, 0, 0);
+
+  const end = new Date(target);
+  end.setHours(eh || 0, em || 0, 0, 0);
+
+  // If today and the slot already passed, push to next week (safety)
+  if (diffDays === 0 && end.getTime() <= now.getTime()) {
+    start.setDate(start.getDate() + 7);
+    end.setDate(end.getDate() + 7);
+  }
+
+  const yyyy = start.getFullYear();
+  const mm = String(start.getMonth() + 1).padStart(2, "0");
+  const dd = String(start.getDate()).padStart(2, "0");
+
+  return {
+    startAtMs: start.getTime(),
+    endAtMs: end.getTime(),
+    dateISO: `${yyyy}-${mm}-${dd}`,
+  };
+}
+/* ================================================================ */
+
 export default function TeacherConsultModal({
   visible,
   onClose,              // onClose({shouldReload?: boolean})
@@ -166,11 +213,22 @@ export default function TeacherConsultModal({
     if (!consult) return;
     setSaving(true);
     try {
-      // save status + signature
+      // ===== NEW: compute concrete start/end timestamps for this slot =====
+      const theDay = consult?.form?.date || consult?.day || "";
+      const theTime = consult?.form?.time || consult?.time || "";
+      const { startAtMs, endAtMs, dateISO } = computeSlotMs(theDay, theTime);
+
+      // save status + signature + timing info (for outcome reminder later)
       await updateDoc(doc(db, "consultations", consult.id), {
         status: "signed_by_teacher",
         signedAt: serverTimestamp(),
         teacherSignature: { base64: sigPngBase64, mime: "image/png", ts: serverTimestamp() },
+
+        // NEW fields
+        startAtMs,
+        endAtMs,
+        dateISO,
+        outcomeDispatched: false,
       });
 
       // notify the student
