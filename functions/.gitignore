@@ -1,2 +1,31 @@
+# deps & build
 node_modules/
-*.local
+dist/
+web-build/
+
+# Expo
+.expo/
+.expo-shared/
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+*.log
+
+# IDE
+.vscode/
+.idea/
+
+# Env / secrets (if you use them)
+.env
+.env.*.local
+.env.local
+
+# Android/iOS credentials you should NOT commit
+*.keystore
+*.jks
+*.p12
+*.mobileprovision
+**/google-services.json
+**/GoogleService-Info.plist

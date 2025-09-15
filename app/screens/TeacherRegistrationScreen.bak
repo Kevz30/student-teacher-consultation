@@ -1,0 +1,174 @@
+// app/screens/TeacherRegistrationScreen.js
+import { Picker } from "@react-native-picker/picker";
+import { useRouter } from "expo-router";
+import { createUserWithEmailAndPassword } from "firebase/auth";
+import { collection, doc, getDoc, getDocs, serverTimestamp, setDoc } from "firebase/firestore";
+import { useEffect, useState } from "react";
+import { ActivityIndicator, Alert, Button, Text, TextInput, View } from "react-native";
+
+import auth from "../../constants/auth";
+import db from "../../constants/firestore";
+
+export default function TeacherRegistrationScreen() {
+  const router = useRouter();
+
+  const [fullName, setFullName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+
+  const [college, setCollege] = useState("");
+  const [colleges, setColleges] = useState([]);
+  const [courses, setCourses] = useState([]);
+  const [course, setCourse] = useState("");
+
+  const [loading, setLoading] = useState(false);
+  const [coursesLoading, setCoursesLoading] = useState(false);
+
+  // Load list of colleges (document IDs in /courses)
+  useEffect(() => {
+    (async () => {
+      try {
+        const snap = await getDocs(collection(db, "courses"));
+        const list = snap.docs.map((d) => d.id).sort();
+        setColleges(list);
+      } catch (err) {
+        console.error("Error loading colleges:", err);
+        Alert.alert("Error", "Failed to load colleges.");
+      }
+    })();
+  }, []);
+
+  // When a college is selected, load /courses/{college}.list
+  useEffect(() => {
+    (async () => {
+      setCourses([]);
+      setCourse("");
+      if (!college) return;
+
+      try {
+        setCoursesLoading(true);
+        const ref = doc(db, "courses", college);
+        const snap = await getDoc(ref);
+        if (!snap.exists()) {
+          Alert.alert("No courses", `No course list found for ${college}.`);
+          return;
+        }
+        const list = Array.isArray(snap.data().list) ? snap.data().list : [];
+        setCourses(list);
+      } catch (err) {
+        console.error("Error loading courses:", err);
+        Alert.alert("Error", "Failed to load courses for the selected college.");
+      } finally {
+        setCoursesLoading(false);
+      }
+    })();
+  }, [college]);
+
+  const handleRegister = async () => {
+    if (!fullName.trim() || !email.trim() || !password || !college || !course) {
+      return Alert.alert("Please complete all fields (including college & course).");
+    }
+
+    try {
+      setLoading(true);
+      const userCred = await createUserWithEmailAndPassword(auth, email.trim(), password);
+      const user = userCred.user;
+
+      await setDoc(doc(db, "instructors", user.uid), {
+        uid: user.uid,
+        email: user.email,
+        fullName: fullName.trim(),
+        displayName: fullName.trim(),
+        role: "teacher",
+        college,              // e.g. "DCS"
+        course,               // e.g. "BSIT"
+        status: "pending",    // unit head will approve
+        createdAt: serverTimestamp(),
+      });
+
+      router.replace("/screens/PendingApprovalScreen");
+    } catch (err) {
+      Alert.alert("Error", err?.message || "Registration failed.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <View style={{ padding: 20 }}>
+      <Text style={{ fontSize: 18, fontWeight: "bold", marginBottom: 10 }}>
+        Teacher Registration
+      </Text>
+
+      <TextInput
+        placeholder="Full Name"
+        value={fullName}
+        onChangeText={setFullName}
+        autoCapitalize="words"
+        style={{ marginBottom: 10, borderBottomWidth: 1, padding: 8 }}
+      />
+
+      <TextInput
+        placeholder="Email"
+        value={email}
+        onChangeText={setEmail}
+        autoCapitalize="none"
+        keyboardType="email-address"
+        style={{ marginBottom: 10, borderBottomWidth: 1, padding: 8 }}
+      />
+
+      <TextInput
+        placeholder="Password"
+        value={password}
+        onChangeText={setPassword}
+        secureTextEntry
+        autoCapitalize="none"
+        style={{ marginBottom: 16, borderBottomWidth: 1, padding: 8 }}
+      />
+
+      {/* College */}
+      <Text style={{ marginBottom: 4 }}>Select College</Text>
+      <Picker selectedValue={college} onValueChange={setCollege} style={{ marginBottom: 12 }}>
+        <Picker.Item label="-- Choose College --" value="" />
+        {colleges.map((c) => (
+          <Picker.Item key={c} label={c} value={c} />
+        ))}
+      </Picker>
+
+      {/* Course (depends on college) */}
+      <Text style={{ marginBottom: 4 }}>Select Course</Text>
+      {coursesLoading ? (
+        <View style={{ marginBottom: 12 }}>
+          <ActivityIndicator />
+        </View>
+      ) : (
+        <Picker
+          enabled={!!college && courses.length > 0}
+          selectedValue={course}
+          onValueChange={setCourse}
+          style={{ marginBottom: 20 }}
+        >
+          <Picker.Item
+            label={
+              !college
+                ? "-- Choose a college first --"
+                : courses.length
+                ? "-- Choose Course --"
+                : "-- No courses available --"
+            }
+            value=""
+          />
+          {courses.map((crs) => (
+            <Picker.Item key={crs} label={crs} value={crs} />
+          ))}
+        </Picker>
+      )}
+
+      {loading ? (
+        <ActivityIndicator size="large" color="#000" />
+      ) : (
+        <Button title="Register" onPress={handleRegister} />
+      )}
+    </View>
+  );
+}

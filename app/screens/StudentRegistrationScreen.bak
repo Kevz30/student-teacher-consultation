@@ -1,0 +1,380 @@
+import { Picker } from "@react-native-picker/picker";
+import * as FileSystem from "expo-file-system/legacy";
+import * as ImagePicker from "expo-image-picker";
+import { createUserWithEmailAndPassword } from "firebase/auth";
+import {
+  collection,
+  doc,
+  getDoc,
+  getDocs,
+  serverTimestamp,
+  setDoc,
+} from "firebase/firestore";
+import { useEffect, useRef, useState } from "react";
+import {
+  ActivityIndicator,
+  Alert,
+  Image,
+  Platform,
+  ScrollView,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
+} from "react-native";
+
+import auth from "../../constants/auth";
+import db from "../../constants/firestore";
+import parseCOR from "../utils/corParser"; // currently expects a base64 string
+import { matchStudentToClasses } from "../utils/matchingHelper";
+import uploadToCloudinary from "../utils/uploadToCloudinary";
+
+const COLORS = {
+  bg: "#0f172a",          // slate-900
+  card: "#111827",        // gray-900
+  text: "#e5e7eb",        // gray-200
+  subtext: "#9ca3af",     // gray-400
+  accent: "#22d3ee",      // cyan-400
+  accentDark: "#0891b2",  // cyan-700
+  border: "#1f2937",      // gray-800
+  inputBg: "#0b1220",     // custom dark
+  danger: "#ef4444",      // red-500
+  success: "#22c55e",     // green-500
+};
+
+const Label = ({ children }) => (
+  <Text style={{ color: COLORS.subtext, marginBottom: 6, fontSize: 13 }}>{children}</Text>
+);
+
+const ButtonPrimary = ({ title, onPress, disabled }) => (
+  <TouchableOpacity
+    onPress={onPress}
+    disabled={disabled}
+    style={{
+      backgroundColor: disabled ? COLORS.accentDark : COLORS.accent,
+      paddingVertical: 14,
+      borderRadius: 14,
+      alignItems: "center",
+      shadowColor: "#000",
+      shadowOpacity: 0.25,
+      shadowRadius: 12,
+      shadowOffset: { width: 0, height: 6 },
+      elevation: 6,
+    }}
+  >
+    <Text style={{ color: "#0b1220", fontWeight: "700", fontSize: 16 }}>{title}</Text>
+  </TouchableOpacity>
+);
+
+const ButtonGhost = ({ title, onPress }) => (
+  <TouchableOpacity
+    onPress={onPress}
+    style={{
+      paddingVertical: 12,
+      borderRadius: 12,
+      alignItems: "center",
+      borderWidth: 1,
+      borderColor: COLORS.border,
+      backgroundColor: COLORS.inputBg,
+    }}
+  >
+    <Text style={{ color: COLORS.text, fontWeight: "600", fontSize: 14 }}>{title}</Text>
+  </TouchableOpacity>
+);
+
+export default function StudentRegistrationScreen() {
+  const [fullName, setFullName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+
+  const [departments, setDepartments] = useState([]);
+  const [department, setDepartment] = useState("");
+  const [courses, setCourses] = useState([]);
+  const [course, setCourse] = useState("");
+
+  const [corImage, setCorImage] = useState(null); // local file:// path
+  const [loading, setLoading] = useState(false);
+  const mounted = useRef(true);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
+
+  const safeSet = (setter) => (v) => { if (mounted.current) setter(v); };
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const snap = await getDocs(collection(db, "courses"));
+        safeSet(setDepartments)(snap.docs.map((d) => d.id));
+      } catch (err) {
+        console.error("Load departments failed:", err);
+      }
+    })();
+  }, []);
+
+  useEffect(() => {
+    if (!department) {
+      safeSet(setCourses)([]);
+      safeSet(setCourse)("");
+      return;
+    }
+    (async () => {
+      try {
+        const deptSnap = await getDoc(doc(db, "courses", department));
+        const list = deptSnap.data()?.list || [];
+        safeSet(setCourses)(list);
+        safeSet(setCourse)(list[0] || "");
+      } catch (err) {
+        console.error("Load courses failed:", err);
+      }
+    })();
+  }, [department]);
+
+  const handlePickImage = async () => {
+    try {
+      const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!perm.granted) {
+        Alert.alert("Permission required", "Please allow gallery access.");
+        return;
+      }
+
+      const res = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: false,
+        quality: 0.8,
+      });
+      if (res.canceled) return;
+
+      const asset = res.assets?.[0];
+      if (!asset?.uri) {
+        Alert.alert("No image selected");
+        return;
+      }
+
+      let uri = asset.uri;
+      if (uri.startsWith("content://")) {
+        const dest = `${FileSystem.cacheDirectory}cor_${Date.now()}.jpg`;
+        await FileSystem.copyAsync({ from: uri, to: dest });
+        uri = dest;
+      }
+
+      safeSet(setCorImage)(uri);
+    } catch (e) {
+      console.error("Image pick error:", e);
+      Alert.alert("Error", "Failed to pick image.");
+    }
+  };
+
+  const handleRegister = async () => {
+    if (!fullName || !email || !password || !department || !course || !corImage) {
+      Alert.alert("Error", "Complete all fields and upload your COR.");
+      return;
+    }
+
+    try {
+      safeSet(setLoading)(true);
+
+      const b64 = await FileSystem.readAsStringAsync(corImage, { encoding: "base64" });
+
+      const corUrl = await uploadToCloudinary(b64, "student_cor_upload");
+      if (!corUrl) throw new Error("Cloudinary upload failed");
+
+      let studentNumber = null;
+      try {
+        const parsed = await parseCOR(b64);
+        studentNumber = parsed?.studentNumber || null;
+      } catch (e) {
+        console.warn("OCR failed, continuing without OCR:", e?.message || e);
+      }
+
+      const { user } = await createUserWithEmailAndPassword(auth, email.trim(), password);
+
+      await setDoc(
+        doc(db, "students", user.uid),
+        {
+          uid: user.uid,
+          fullName,
+          email: user.email,
+          role: "student",
+          status: "pending_verification",
+          department,
+          course,
+          studentNumber,
+          corUrl,
+          createdAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
+
+      try { await matchStudentToClasses(user.uid); } catch {}
+
+      Alert.alert("Success", "Registration complete!");
+    } catch (err) {
+      console.error(err);
+      Alert.alert("Error", err?.message || "Registration failed.");
+    } finally {
+      safeSet(setLoading)(false);
+    }
+  };
+
+  const inputStyle = {
+    backgroundColor: COLORS.inputBg,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    color: COLORS.text,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderRadius: 12,
+    marginBottom: 12,
+    fontSize: 14,
+  };
+
+  const cardStyle = {
+    backgroundColor: COLORS.card,
+    borderRadius: 18,
+    padding: 18,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    shadowColor: "#000",
+    shadowOpacity: 0.3,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 8,
+  };
+
+  const pickerWrapper = {
+    backgroundColor: COLORS.inputBg,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: 12,
+    marginBottom: 12,
+    overflow: "hidden",
+  };
+
+  return (
+    <View style={{ flex: 1, backgroundColor: COLORS.bg }}>
+      {/* Header */}
+      <View style={{ paddingTop: Platform.OS === "android" ? 38 : 18, paddingHorizontal: 20, paddingBottom: 12 }}>
+        <Text style={{ color: COLORS.text, fontSize: 20, fontWeight: "800" }}>
+          Student Registration
+        </Text>
+        <Text style={{ color: COLORS.subtext, marginTop: 6 }}>
+          Create your account and upload your COR to get started.
+        </Text>
+      </View>
+
+      <ScrollView contentContainerStyle={{ padding: 20, paddingBottom: 40 }}>
+        <View style={cardStyle}>
+          <Label>Full Name</Label>
+          <TextInput
+            placeholder="Juan Dela Cruz"
+            placeholderTextColor={COLORS.subtext}
+            value={fullName}
+            onChangeText={setFullName}
+            autoCapitalize="words"
+            style={inputStyle}
+          />
+
+          <Label>Email</Label>
+          <TextInput
+            placeholder="name@email.com"
+            placeholderTextColor={COLORS.subtext}
+            value={email}
+            onChangeText={setEmail}
+            keyboardType="email-address"
+            autoCapitalize="none"
+            style={inputStyle}
+          />
+
+          <Label>Password</Label>
+          <TextInput
+            placeholder="••••••••"
+            placeholderTextColor={COLORS.subtext}
+            value={password}
+            onChangeText={setPassword}
+            secureTextEntry
+            autoCapitalize="none"
+            style={inputStyle}
+          />
+
+          <Label>Department</Label>
+          <View style={pickerWrapper}>
+            <Picker
+              selectedValue={department}
+              onValueChange={setDepartment}
+              dropdownIconColor={COLORS.text}
+              style={{ color: COLORS.text }}
+            >
+              <Picker.Item label="Select Department" value="" color={COLORS.subtext} />
+              {departments.map((d) => (
+                <Picker.Item key={d} label={d} value={d} color={COLORS.text} />
+              ))}
+            </Picker>
+          </View>
+
+          <Label>Course</Label>
+          <View style={[pickerWrapper, { opacity: courses.length ? 1 : 0.6 }]}>
+            <Picker
+              selectedValue={course}
+              onValueChange={setCourse}
+              enabled={courses.length > 0}
+              dropdownIconColor={COLORS.text}
+              style={{ color: COLORS.text }}
+            >
+              {courses.length === 0 ? (
+                <Picker.Item label="Select Department first" value="" color={COLORS.subtext} />
+              ) : (
+                courses.map((c) => (
+                  <Picker.Item key={c} label={c} value={c} color={COLORS.text} />
+                ))
+              )}
+            </Picker>
+          </View>
+
+          <View style={{ height: 12 }} />
+
+          <ButtonGhost title={corImage ? "Change COR Image" : "Pick COR Image"} onPress={handlePickImage} />
+
+          {corImage && (
+            <Image
+              source={{ uri: corImage }}
+              style={{
+                height: 180,
+                marginTop: 12,
+                borderRadius: 14,
+                borderWidth: 1,
+                borderColor: COLORS.border,
+              }}
+              resizeMode="cover"
+            />
+          )}
+
+          <View style={{ height: 16 }} />
+
+          {loading ? (
+            <View
+              style={{
+                backgroundColor: COLORS.inputBg,
+                borderColor: COLORS.border,
+                borderWidth: 1,
+                paddingVertical: 14,
+                borderRadius: 14,
+                alignItems: "center",
+              }}
+            >
+              <ActivityIndicator size="small" color={COLORS.accent} />
+            </View>
+          ) : (
+            <ButtonPrimary title="Register" onPress={handleRegister} />
+          )}
+
+          <Text style={{ color: COLORS.subtext, fontSize: 12, textAlign: "center", marginTop: 10 }}>
+            By registering, you agree to our policies. You can edit details later.
+          </Text>
+        </View>
+      </ScrollView>
+    </View>
+  );
+}

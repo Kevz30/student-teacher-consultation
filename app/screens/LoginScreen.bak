@@ -119,14 +119,14 @@ export default function LoginScreen() {
 
       <Button title={busy ? "Signing in…" : "Login"} onPress={handleLogin} disabled={busy} />
 
-      {/* Routes aligned to new files */}
-      <TouchableOpacity onPress={() => router.push("/screens/student-register")}>
+      {/* ✅ Correct routes for files inside /screens */}
+      <TouchableOpacity onPress={() => router.push("/screens/StudentRegistrationScreen")}>
         <Text style={{ marginTop: 20, textAlign: "center", color: "blue" }}>
           Don’t have an account? Register
         </Text>
       </TouchableOpacity>
 
-      <TouchableOpacity onPress={() => router.push("/screens/teacher-register")}>
+      <TouchableOpacity onPress={() => router.push("/screens/TeacherRegistrationScreen")}>
         <Text style={{ marginTop: 10, textAlign: "center", color: "blue" }}>
           Register as a Teacher?
         </Text>

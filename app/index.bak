@@ -1,0 +1,117 @@
+// --- Base64 polyfill (fixes 'Base64 of undefined') ---
+import { decode as atob, encode as btoa } from "base-64";
+if (!global.btoa) global.btoa = btoa;
+if (!global.atob) global.atob = atob;
+// -----------------------------------------------------
+
+import { Redirect, router } from "expo-router";
+import { doc, getDoc } from "firebase/firestore";
+import { useEffect, useRef, useState } from "react";
+import { ActivityIndicator, Text, View } from "react-native";
+import auth from "../constants/auth";
+import db from "../constants/firestore";
+
+// Toggle auto-login here
+const AUTO_LOGIN_ENABLED = false; // true = auto login, false = always go to login
+
+export default function Index() {
+  const [booting, setBooting] = useState(true);
+  const mounted = useRef(true);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+
+  // If auto-login is disabled, use a Redirect (safe & no navigation before mount)
+  if (!AUTO_LOGIN_ENABLED) {
+    return <Redirect href="/screens/LoginScreen" />;
+  }
+
+  useEffect(() => {
+    const unsub = auth.onAuthStateChanged(async (user) => {
+      try {
+        if (!user) {
+          router.replace("/screens/LoginScreen");
+          return;
+        }
+
+        const uid = user.uid;
+
+        let studentSnap, instrSnap, userSnap;
+        try {
+          [studentSnap, instrSnap, userSnap] = await Promise.all([
+            getDoc(doc(db, "students", uid)),
+            getDoc(doc(db, "instructors", uid)),
+            getDoc(doc(db, "users", uid)),
+          ]);
+        } catch (err) {
+          // If reads fail (rules/offline), go to login
+          router.replace("/screens/LoginScreen");
+          return;
+        }
+
+        if (studentSnap?.exists()) {
+          router.replace("/student-dashboard");
+          return;
+        }
+
+        if (instrSnap?.exists()) {
+          const status = (instrSnap.data()?.status || "").toLowerCase();
+          if (status !== "approved") {
+            router.replace("/screens/LoginScreen");
+            return;
+          }
+          router.replace("/teacher-dashboard");
+          return;
+        }
+
+        if (userSnap?.exists()) {
+          const u = userSnap.data() || {};
+          const roleStr = (u.role || "").toString().toLowerCase();
+          const mapRole =
+            u.roles?.admin
+              ? "admin"
+              : (u.roles?.unitHead || u.roles?.unit_head)
+              ? "unit_head"
+              : null;
+
+          const role =
+            roleStr === "admin"
+              ? "admin"
+              : roleStr === "unit_head" || roleStr === "unithead"
+              ? "unit_head"
+              : mapRole;
+
+          if (role === "admin") {
+            router.replace("/admin");
+            return;
+          }
+          if (role === "unit_head") {
+            router.replace("/unit-head");
+            return;
+          }
+        }
+
+        router.replace("/screens/LoginScreen");
+      } finally {
+        if (mounted.current) setBooting(false);
+      }
+    });
+
+    return () => unsub();
+  }, []);
+
+  if (booting) {
+    return (
+      <View style={{ flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: "#fff" }}>
+        <ActivityIndicator />
+        <Text style={{ marginTop: 8, color: "#6b7280" }}>Loading…</Text>
+      </View>
+    );
+  }
+
+  return <View style={{ flex: 1, backgroundColor: "#fff" }} />;
+}

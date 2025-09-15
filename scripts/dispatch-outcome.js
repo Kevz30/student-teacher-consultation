@@ -136,19 +136,6 @@ function slotHasEndedPH(consult) {
     // Write notification then mark consultation
     const batch = db.batch();
 
-    const notifRef = db.collection("notifications").doc();
-    batch.set(notifRef, {
-      userId: studentId,
-      title: "Please complete consultation outcome",
-      message: `Your consultation on ${c.form?.date || c.day} at ${c.form?.time || c.time} has ended. Please fill out "Other Notes / Proceedings / Outcome" to finalize the record.`,
-      type: "outcome_request",
-      consultationId: docSnap.id,
-      teacherId: c.teacherId || c.form?.teacherId || null,
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      createdAtMs: Date.now(),
-      read: false,
-    });
-
     batch.update(docSnap.ref, {
       outcomeStatus: "requested",
       outcomeRequestedAt: admin.firestore.FieldValue.serverTimestamp(),

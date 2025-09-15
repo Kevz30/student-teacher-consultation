@@ -7,16 +7,15 @@
     "icon": "./assets/images/icon.png",
     "scheme": "studentteacherconsultation",
     "userInterfaceStyle": "automatic",
-    "newArchEnabled": true,
-    "ios": {
-      "supportsTablet": true
-    },
+    "ios": { "supportsTablet": true },
     "android": {
+      "package": "com.psau.iconsult",
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
-      "edgeToEdgeEnabled": true
+      "edgeToEdgeEnabled": true,
+      "icon": "./assets/images/icon.png"
     },
     "web": {
       "bundler": "metro",
@@ -36,12 +35,11 @@
       ],
       "expo-asset"
     ],
-    "experiments": {
-      "typedRoutes": true
-    },
-    "assetBundlePatterns": [
-      "**/*"
-    ],
-    "main": "expo-router/entry"
+    "experiments": { "typedRoutes": true },
+    "assetBundlePatterns": ["**/*"],
+    "extra": {
+      "router": {},
+      "eas": { "projectId": "3a7bbb4e-7f04-4bc5-96c2-86b599263efd" }
+    }
   }
 }

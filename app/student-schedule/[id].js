@@ -9,6 +9,8 @@ import {
   collection,
   doc,
   getDoc,
+  // ✅ ADDED: real-time updates for schedules
+  onSnapshot,
   serverTimestamp,
   setDoc,
 } from "firebase/firestore";
@@ -29,9 +31,8 @@ import ScheduleGrid from "../../components/ScheduleGrid";
 import db from "../../constants/firestore";
 import { generatePrefilledPDF } from "../utils/generatePrefilledPdf";
 
-
 /** ==== SWITCH: set to true/false to enable/disable grey + block past days ==== */
-const GREY_PAST_DAYS_ENABLED = false;
+const GREY_PAST_DAYS_ENABLED = true;
 /** ========================================================================== */
 
 const WEEK = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
@@ -92,8 +93,30 @@ export default function StudentScheduleScreen() {
     setLoading(false);
   };
 
+  // 🔄 UPDATED: keep your fetch, but also attach a real-time listener so
+  // changes on the teacher’s schedule reflect instantly in this screen.
   useEffect(() => {
+    if (!teacherId) return;
+
+    // initial fetch (kept, per “don’t remove anything”)
     fetchSchedule();
+
+    // live subscription
+    const unsub = onSnapshot(
+      doc(db, "schedules", teacherId),
+      (snap) => {
+        if (snap.exists()) {
+          setGrid(snap.data().grid || null);
+        } else {
+          setGrid(null);
+        }
+        setLoading(false);
+      },
+      // on error — just end the loading state so UI isn’t stuck
+      () => setLoading(false)
+    );
+
+    return () => unsub();
   }, [teacherId]);
 
   const Check = ({ label, value, onToggle }) => (
@@ -138,13 +161,17 @@ export default function StudentScheduleScreen() {
     const s = studentSnap.data() || {};
     const t = teacherSnap.data() || {};
 
+    // ✅ Robustly resolve office/college and force to string
+    const officeFromInstructor =
+      t?.college ?? t?.College ?? t?.office ?? t?.department ?? "";
+
     setSlot({ day, time });
     setForm((prev) => ({
       ...prev,
       nameClient: s.fullName || s.displayName || "",
       studentNumber: s.studentNumber || "",
       program: s.course || "",
-      office: t.college || t.office || "",
+      office: String(officeFromInstructor),   // ← fixed
       consultantName: t.displayName || t.fullName || "",
       date: day,
       time,
@@ -173,107 +200,107 @@ export default function StudentScheduleScreen() {
   };
 
   const submitConsultation = async () => {
-  const currentUser = auth.currentUser;
-  if (!currentUser?.uid) return;
+    const currentUser = auth.currentUser;
+    if (!currentUser?.uid) return;
 
-  try {
-    // 1) Create the consultation
-    const ref = await addDoc(collection(db, "consultations"), {
-      teacherId,
-      studentId: currentUser.uid,
-      day: form.date,
-      time: form.time,
-      status: "pending_teacher",
-      createdAt: serverTimestamp(),
-      form,
-    });
-
-    // 2) 🔔 Notify the TEACHER
     try {
-      await addDoc(collection(db, "notifications"), {
-        userId: teacherId,                              // <-- teacher sees it
-        title: "New consultation request",
-        message: `${form.nameClient || "A student"} requested ${form.date} at ${form.time}. Tap to review.`,
-        type: "consultation_request",
-        consultationId: ref.id,                         // <-- lets the bell open the modal
+      // 1) Create the consultation
+      const ref = await addDoc(collection(db, "consultations"), {
         teacherId,
         studentId: currentUser.uid,
         day: form.date,
         time: form.time,
+        status: "pending_teacher",
         createdAt: serverTimestamp(),
-        createdAtMs: Date.now(),
-        read: false,
+        form,
       });
-    } catch (e) {
-      console.warn("[notif->teacher] failed:", e?.message || e);
-    }
 
-    // 3) Turn the slot yellow
-    const newGrid = { ...grid };
-    newGrid[form.date][form.time] = "yellow";
-    await setDoc(doc(db, "schedules", teacherId), { grid: newGrid }, { merge: true });
-    setGrid(newGrid);
-    setShowForm(false);
+      // 2) 🔔 Notify the TEACHER
+      try {
+        await addDoc(collection(db, "notifications"), {
+          userId: teacherId,                              // <-- teacher sees it
+          title: "New consultation request",
+          message: `${form.nameClient || "A student"} requested ${form.date} at ${form.time}. Tap to review.`,
+          type: "consultation_request",
+          consultationId: ref.id,                         // <-- lets the bell open the modal
+          teacherId,
+          studentId: currentUser.uid,
+          day: form.date,
+          time: form.time,
+          createdAt: serverTimestamp(),
+          createdAtMs: Date.now(),
+          read: false,
+        });
+      } catch (e) {
+        console.warn("[notif->teacher] failed:", e?.message || e);
+      }
 
-    // 4) (existing) PDF prompt flow…
-    Alert.alert("PDF copy", "Do you want a PDF copy of this form?", [
-      {
-        text: "No",
-        style: "cancel",
-        onPress: () => Alert.alert("Submitted", "Your consultation request is now pending."),
-      },
-      {
-        text: "Yes",
-        onPress: async () => {
-          try {
-            const [studentSnap, teacherSnap] = await Promise.all([
-              getDoc(doc(db, "students", currentUser.uid)),
-              getDoc(doc(db, "instructors", teacherId)),
-            ]);
-            const s = studentSnap.data() || {};
-            const t = teacherSnap.data() || {};
+      // 3) Turn the slot yellow
+      const newGrid = { ...grid };
+      newGrid[form.date][form.time] = "yellow";
+      await setDoc(doc(db, "schedules", teacherId), { grid: newGrid }, { merge: true });
+      setGrid(newGrid);
+      setShowForm(false);
 
-            const pdfPath = await generatePrefilledPDF(
-              {
-                fullName: form.nameClient || s.fullName || s.displayName || "",
-                studentNumber: form.studentNumber || s.studentNumber || "",
-                course: form.program || s.course || "",
-              },
-              { fullName: form.consultantName || t.displayName || t.fullName || "" },
-              { day: form.date, time: form.time },
-              {
-                office: form.office,
-                date: form.date,
-                duration: form.duration,
-                yearSection: form.yearSection,
-                contactNumber: form.contactNumber,
-                methods: form.methods,
-                inquiry: form.inquiry,
-              },
-              `${currentUser.uid}_${teacherId}_${form.date}_${form.time}.pdf`
-            );
-
-            const canShare = await Sharing.isAvailableAsync();
-            if (canShare) {
-              await Sharing.shareAsync(pdfPath, {
-                mimeType: "application/pdf",
-                dialogTitle: "Your PDF copy",
-              });
-            } else {
-              Alert.alert("Saved", `Saved to: ${pdfPath}`);
-            }
-          } catch (err) {
-            Alert.alert("Error", "Could not create the PDF copy.");
-          } finally {
-            Alert.alert("Submitted", "Your consultation request is now pending.");
-          }
+      // 4) (existing) PDF prompt flow…
+      Alert.alert("PDF copy", "Do you want a PDF copy of this form?", [
+        {
+          text: "No",
+          style: "cancel",
+          onPress: () => Alert.alert("Submitted", "Your consultation request is now pending."),
         },
-      },
-    ]);
-  } catch (e) {
-    Alert.alert("Error", "Could not submit the consultation request.");
-  }
-};
+        {
+          text: "Yes",
+          onPress: async () => {
+            try {
+              const [studentSnap, teacherSnap] = await Promise.all([
+                getDoc(doc(db, "students", currentUser.uid)),
+                getDoc(doc(db, "instructors", teacherId)),
+              ]);
+              const s = studentSnap.data() || {};
+              const t = teacherSnap.data() || {};
+
+              const pdfPath = await generatePrefilledPDF(
+                {
+                  fullName: form.nameClient || s.fullName || s.displayName || "",
+                  studentNumber: form.studentNumber || s.studentNumber || "",
+                  course: form.program || s.course || "",
+                },
+                { fullName: form.consultantName || t.displayName || t.fullName || "" },
+                { day: form.date, time: form.time },
+                {
+                  office: form.office,
+                  date: form.date,
+                  duration: form.duration,
+                  yearSection: form.yearSection,
+                  contactNumber: form.contactNumber,
+                  methods: form.methods,
+                  inquiry: form.inquiry,
+                },
+                `${currentUser.uid}_${teacherId}_${form.date}_${form.time}.pdf`
+              );
+
+              const canShare = await Sharing.isAvailableAsync();
+              if (canShare) {
+                await Sharing.shareAsync(pdfPath, {
+                  mimeType: "application/pdf",
+                  dialogTitle: "Your PDF copy",
+                });
+              } else {
+                Alert.alert("Saved", `Saved to: ${pdfPath}`);
+              }
+            } catch (err) {
+              Alert.alert("Error", "Could not create the PDF copy.");
+            } finally {
+              Alert.alert("Submitted", "Your consultation request is now pending.");
+            }
+          },
+        },
+      ]);
+    } catch (e) {
+      Alert.alert("Error", "Could not submit the consultation request.");
+    }
+  };
 
   // 🎨 Build a display-only grid that greys out ALL colors on past days (when switch ON)
   const displayGrid = useMemo(() => {
