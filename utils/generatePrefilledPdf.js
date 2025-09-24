@@ -194,7 +194,7 @@ export async function generatePrefilledPDF(
   opts = {}
 ) {
   // Load template
-  const asset = Asset.fromModule(require("../../assets/consultation-form.pdf"));
+  const asset = Asset.fromModule(require("../assets/consultation-form.pdf"));
   await asset.downloadAsync();
   const res = await fetch(asset.localUri || asset.uri);
   const bytes = await res.arrayBuffer();
@@ -312,7 +312,8 @@ export async function generatePrefilledPDF(
 }
 
 export async function debugListFormFieldNames() {
-  const asset = Asset.fromModule(require("../../assets/consultation-form.pdf"));
+  const asset = Asset.fromModule(require("../assets/consultation-form.pdf")
+);
   await asset.downloadAsync();
   const res = await fetch(asset.localUri || asset.uri);
   const bytes = await res.arrayBuffer();

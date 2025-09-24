@@ -1,30 +1,30 @@
 // components/ScheduleGrid.js
 import {
-  addDoc,
-  collection,
-  doc,
-  getDoc,
-  getDocs,
-  query,
-  serverTimestamp,
-  setDoc,
-  where
+    addDoc,
+    collection,
+    doc,
+    getDoc,
+    getDocs,
+    query,
+    serverTimestamp,
+    setDoc,
+    where
 } from "firebase/firestore";
 import { useEffect, useMemo, useState } from "react";
 import {
-  Alert,
-  KeyboardAvoidingView,
-  Modal,
-  Platform,
-  Pressable,
-  ScrollView,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  View,
+    Alert,
+    KeyboardAvoidingView,
+    Modal,
+    Platform,
+    Pressable,
+    ScrollView,
+    Text,
+    TextInput,
+    TouchableOpacity,
+    View,
 } from "react-native";
-import { TIMESLOTS, WEEKDAYS } from "../app/utils/scheduleTemplate";
 import db from "../constants/firestore";
+import { TIMESLOTS, WEEKDAYS } from "../utils/scheduleTemplate";
 
 /* ---------- small utils ---------- */
 const normalize = (str = "") =>

@@ -1,5 +1,4 @@
 // components/UnitHeadConsultModal.js
-import { getAuth } from "firebase/auth";
 import {
   addDoc,
   collection,
@@ -19,6 +18,7 @@ import {
   View,
 } from "react-native";
 import Signature from "react-native-signature-canvas";
+import auth from "../constants/auth";
 import db from "../constants/firestore";
 
 function Row({ label, value }) {
@@ -39,7 +39,7 @@ export default function UnitHeadConsultModal({
   const [saving, setSaving] = useState(false);
   const [consult, setConsult] = useState(null);
   const [mode, setMode] = useState("view"); // 'view' | 'sign'
-  const auth = getAuth();
+
   const unitHeadUid = auth.currentUser?.uid || null;
 
   useEffect(() => {

@@ -1,7 +1,7 @@
 // app/teacher-archive/index.js
 import * as FileSystem from "expo-file-system/legacy";
 import * as Sharing from "expo-sharing";
-import { getAuth, onAuthStateChanged } from "firebase/auth";
+import { onAuthStateChanged } from "firebase/auth";
 import {
   collection,
   doc,
@@ -23,8 +23,9 @@ import {
   View,
 } from "react-native";
 
+import auth from "../../constants/auth";
 import db from "../../constants/firestore";
-import { generatePrefilledPDF } from "../utils/generatePrefilledPdf";
+import { generatePrefilledPDF } from "../../utils/generatePrefilledPdf";
 
 /* ---------- Small helpers ---------- */
 const Row = ({ label, value }) => (
@@ -192,8 +193,6 @@ const occurrTs = (c) => {
 };
 
 export default function TeacherArchiveScreen() {
-  const auth = getAuth();
-
   const [uid, setUid] = useState(null);
   const [authReady, setAuthReady] = useState(false);
 
@@ -211,7 +210,7 @@ export default function TeacherArchiveScreen() {
       setAuthReady(true);
     });
     return unsub;
-  }, [auth]);
+  }, []);
 
   // Subscribe once we have a UID
   useEffect(() => {

@@ -4,7 +4,6 @@ import { Picker } from "@react-native-picker/picker";
 import * as DocumentPicker from "expo-document-picker";
 import * as FileSystem from "expo-file-system/legacy";
 import { useRouter } from "expo-router";
-import { getAuth } from "firebase/auth";
 import {
   addDoc,
   collection,
@@ -28,6 +27,7 @@ import {
   View,
 } from "react-native";
 import * as XLSX from "xlsx";
+import auth from "../constants/auth";
 import db from "../constants/firestore";
 
 export default function MyClassesScreen() {
@@ -44,7 +44,6 @@ export default function MyClassesScreen() {
   const [allCourses, setAllCourses] = useState([]);
   const [showAllCourses, setShowAllCourses] = useState(false);
 
-  const auth = getAuth();
   const uid = auth.currentUser?.uid;
   const router = useRouter();
 

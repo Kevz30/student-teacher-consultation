@@ -1,4 +1,4 @@
-import { scanOCR } from "../student/ocrHelper";
+import { scanOCR } from "../app/student/ocrHelper";
 
 export default async function parseCOR(base64) {
   const rawText = await scanOCR(base64);

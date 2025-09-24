@@ -1,16 +1,15 @@
 import * as FileSystem from "expo-file-system/legacy";
 import * as ImagePicker from "expo-image-picker";
-import { getAuth } from "firebase/auth";
 import { doc, getDoc, setDoc } from "firebase/firestore";
 import { useState } from "react";
 import { Alert, Button, Image, View } from "react-native";
+import auth from "../../constants/auth";
 import db from "../../constants/firestore";
-import parseCOR from "../utils/corParser";
-import { matchStudentToClasses } from "../utils/matchingHelper";
+import parseCOR from "../../utils/corParser";
+import { matchStudentToClasses } from "../../utils/matchingHelper";
 
 export default function UploadCORScreen() {
   const [image, setImage] = useState(null);
-  const auth = getAuth();
   const uid = auth.currentUser?.uid;
 
   const pickImage = async () => {

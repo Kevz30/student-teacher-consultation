@@ -162,7 +162,7 @@ export default function TeacherRegister() {
       }, { merge: true });
 
       Alert.alert("Submitted", "Your registration is pending approval.");
-      router.replace("/screens/LoginScreen");
+      router.replace("/screens/PendingApprovalScreen");
     } catch (e) {
       // Friendlier auth error messages
       const msg =

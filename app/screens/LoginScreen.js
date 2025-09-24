@@ -1,26 +1,49 @@
 // app/screens/LoginScreen.js
 import { router } from "expo-router";
-import { signInWithEmailAndPassword } from "firebase/auth";
-import { doc, getDoc } from "firebase/firestore";
+import {
+  onAuthStateChanged,
+  sendEmailVerification,
+  signInWithEmailAndPassword,
+  signOut,
+} from "firebase/auth";
 import { useEffect, useRef, useState } from "react";
 import {
-  Alert,
-  Button,
-  KeyboardAvoidingView,
-  Platform,
-  Text,
-  TextInput,
-  TouchableOpacity,
+  Alert, Button, KeyboardAvoidingView, Platform,
+  Text, TextInput, TouchableOpacity
 } from "react-native";
 
 import auth from "../../constants/auth";
-import db from "../../constants/firestore";
+import routeByRole from "../../utils/routeByRole";
+
+
+
+const USERNAME_DOMAIN = "noemail.local"; // alias for username logins
+
+// 🔒 toggle this for dev/prod
+const VERIFY_EMAIL_REQUIRED = true; // set to false to bypass during testing
+
+// optional test emails (only bypassed if VERIFY_EMAIL_REQUIRED = false)
+const TEST_EMAILS = ["dcsunithead@test.com", "bsitunithead@test.com", "admin@test.com",];
+
+const toLoginEmail = (input) => {
+  const s = String(input || "").trim();
+  if (!s) return "";
+  if (s.includes("@")) return s; // real email
+  const u = s.toLowerCase().replace(/\s+/g, "");
+  return `${u}@${USERNAME_DOMAIN}`;
+};
+
+const isTestEmail = (email) => {
+  if (!email) return false;
+  return TEST_EMAILS.includes(String(email).toLowerCase());
+};
 
 export default function LoginScreen() {
-  const [email, setEmail] = useState("");
+  const [emailOrUsername, setEmailOrUsername] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const mounted = useRef(true);
+  const routed = useRef(false);
 
   useEffect(() => {
     mounted.current = true;
@@ -29,59 +52,64 @@ export default function LoginScreen() {
 
   const safeSetBusy = (v) => { if (mounted.current) setBusy(v); };
 
-  const handleLogin = async () => {
-    if (busy) return;
-    const em = email.trim();
-    if (!em || !password) {
-      Alert.alert("Missing info", "Please enter email and password.");
-      return;
-    }
+  // Session check
+  useEffect(() => {
+    safeSetBusy(true);
+    const unsub = onAuthStateChanged(auth, async (user) => {
+      if (!mounted.current) return;
+      if (user && !routed.current) {
+        const isUsername = user.email?.endsWith(`@${USERNAME_DOMAIN}`);
+        const bypass = !VERIFY_EMAIL_REQUIRED && isTestEmail(user.email);
 
-    try {
-      safeSetBusy(true);
-
-      const userCred = await signInWithEmailAndPassword(auth, em, password);
-      const uid = userCred.user.uid;
-
-      // 1) Student?
-      const studentSnap = await getDoc(doc(db, "students", uid));
-      if (studentSnap.exists()) {
-        router.replace("/student-dashboard");
-        return;
-      }
-
-      // 2) Teacher? (must be approved)
-      const instrSnap = await getDoc(doc(db, "instructors", uid));
-      if (instrSnap.exists()) {
-        const status = (instrSnap.data()?.status || "").toLowerCase();
-        if (status !== "approved") {
-          Alert.alert("Pending Approval", "Your account is awaiting admin approval.");
+        if (!isUsername && !user.emailVerified && VERIFY_EMAIL_REQUIRED && !bypass) {
+          try { await sendEmailVerification(user); } catch {}
+          try { await signOut(auth); } catch {}
+          Alert.alert(
+            "Verify your email",
+            "We sent a verification link to your email. Please verify, then log in again."
+          );
           safeSetBusy(false);
           return;
         }
-        router.replace("/teacher-dashboard");
+
+        routed.current = true;
+        await routeByRole(user.uid);
+      }
+      safeSetBusy(false);
+    });
+    return unsub;
+  }, []);
+
+  const handleLogin = async () => {
+    if (busy) return;
+    const loginEmail = toLoginEmail(emailOrUsername);
+    if (!loginEmail || !password) {
+      Alert.alert("Missing info", "Enter username/email and password.");
+      return;
+    }
+    try {
+      safeSetBusy(true);
+      const cred = await signInWithEmailAndPassword(auth, loginEmail, password);
+      const user = cred.user;
+
+      const isUsername = user.email?.endsWith(`@${USERNAME_DOMAIN}`);
+      const bypass = !VERIFY_EMAIL_REQUIRED && isTestEmail(user.email);
+
+      if (!isUsername && !user.emailVerified && VERIFY_EMAIL_REQUIRED && !bypass) {
+        try { await sendEmailVerification(user); } catch {}
+        try { await signOut(auth); } catch {}
+        Alert.alert(
+          "Verify your email",
+          "We sent a verification link to your email. Please verify, then log in again."
+        );
+        safeSetBusy(false);
         return;
       }
 
-      // 3) Users: Admin / Unit Head
-      const userSnap = await getDoc(doc(db, "users", uid));
-      if (userSnap.exists()) {
-        const u = userSnap.data() || {};
-        const roleStr = (u.role || "").toString().toLowerCase();
-        const mapRole =
-          u.roles?.admin ? "admin" :
-          (u.roles?.unitHead || u.roles?.unit_head) ? "unit_head" : null;
-
-        const role =
-          roleStr === "admin" ? "admin" :
-          (roleStr === "unit_head" || roleStr === "unithead") ? "unit_head" :
-          mapRole;
-
-        if (role === "admin") { router.replace("/admin"); return; }
-        if (role === "unit_head") { router.replace("/unit-head"); return; }
+      if (!routed.current) {
+        routed.current = true;
+        await routeByRole(user.uid, { showPendingAlert: true });
       }
-
-      Alert.alert("Login Failed", "No role assigned. Contact administrator.");
     } catch (err) {
       Alert.alert("Login Failed", err?.message || String(err));
     } finally {
@@ -99,13 +127,20 @@ export default function LoginScreen() {
       </Text>
 
       <TextInput
-        placeholder="Email"
+        placeholder="Email or Username"
         placeholderTextColor="#999"
-        value={email}
-        onChangeText={setEmail}
+        value={emailOrUsername}
+        onChangeText={setEmailOrUsername}
         autoCapitalize="none"
-        keyboardType="email-address"
-        style={{ backgroundColor: "#f2f2f2", marginBottom: 12, padding: 10, borderRadius: 8 }}
+        keyboardType="default"
+        editable={!busy}
+        style={{
+          backgroundColor: "#f2f2f2",
+          marginBottom: 12,
+          padding: 10,
+          borderRadius: 8,
+          opacity: busy ? 0.6 : 1
+        }}
       />
 
       <TextInput
@@ -114,20 +149,26 @@ export default function LoginScreen() {
         value={password}
         onChangeText={setPassword}
         secureTextEntry
-        style={{ backgroundColor: "#f2f2f2", marginBottom: 20, padding: 10, borderRadius: 8 }}
+        editable={!busy}
+        style={{
+          backgroundColor: "#f2f2f2",
+          marginBottom: 12,
+          padding: 10,
+          borderRadius: 8,
+          opacity: busy ? 0.6 : 1
+        }}
       />
 
       <Button title={busy ? "Signing in…" : "Login"} onPress={handleLogin} disabled={busy} />
 
-      {/* Routes aligned to new files */}
-      <TouchableOpacity onPress={() => router.push("/screens/student-register")}>
-        <Text style={{ marginTop: 20, textAlign: "center", color: "blue" }}>
+      <TouchableOpacity onPress={() => router.push("/screens/student-register")} disabled={busy}>
+        <Text style={{ marginTop: 20, textAlign: "center", color: "blue", opacity: busy ? 0.6 : 1 }}>
           Don’t have an account? Register
         </Text>
       </TouchableOpacity>
 
-      <TouchableOpacity onPress={() => router.push("/screens/teacher-register")}>
-        <Text style={{ marginTop: 10, textAlign: "center", color: "blue" }}>
+      <TouchableOpacity onPress={() => router.push("/screens/teacher-register")} disabled={busy}>
+        <Text style={{ marginTop: 10, textAlign: "center", color: "blue", opacity: busy ? 0.6 : 1 }}>
           Register as a Teacher?
         </Text>
       </TouchableOpacity>

@@ -1,15 +1,88 @@
-// app/admin/index.js
+import { Ionicons } from "@expo/vector-icons";
 import { router, useNavigation } from "expo-router";
-import { getAuth, signOut } from "firebase/auth";
+import { signOut } from "firebase/auth";
 import { useLayoutEffect, useState } from "react";
 import {
   Alert,
   Modal,
-  ScrollView,
   Text,
   TouchableOpacity,
   View,
 } from "react-native";
+import auth from "../../constants/auth";
+
+
+function Tile({ icon, title, subtitle, onPress, color, bg, disabled }) {
+  return (
+    <TouchableOpacity
+      onPress={onPress}
+      disabled={disabled}
+      activeOpacity={0.9}
+      style={{
+        flex: 1,
+        margin: 8,
+        backgroundColor: "#ffffff",
+        borderRadius: 20,
+        shadowColor: "#000",
+        shadowOpacity: 0.06,
+        shadowRadius: 8,
+        shadowOffset: { width: 0, height: 3 },
+        elevation: 2,
+        borderWidth: 1,
+        borderColor: "#f1f5f9",
+        justifyContent: "center",
+        alignItems: "center",
+        paddingVertical: 18,
+        paddingHorizontal: 12,
+        opacity: disabled ? 0.6 : 1,
+      }}
+    >
+      {/* Icon */}
+      <View
+        style={{
+          width: 70,
+          height: 70,
+          borderRadius: 18,
+          backgroundColor: bg,
+          alignItems: "center",
+          justifyContent: "center",
+          marginBottom: 12,
+        }}
+      >
+        <Ionicons name={icon} size={42} color={color} />
+      </View>
+
+      {/* Title */}
+      <Text
+        style={{
+          fontSize: 17,
+          fontWeight: "800",
+          color: "#0f172a",
+          textAlign: "center",
+          marginBottom: 6,
+        }}
+        numberOfLines={2}
+      >
+        {title}
+      </Text>
+
+      {/* Subtitle */}
+      {!!subtitle && (
+        <Text
+          style={{
+            fontSize: 13.5,
+            color: "#6b7280",
+            textAlign: "center",
+            lineHeight: 18,
+          }}
+          numberOfLines={3}
+        >
+          {subtitle}
+        </Text>
+      )}
+    </TouchableOpacity>
+  );
+}
 
 export default function AdminDashboard() {
   const navigation = useNavigation();
@@ -19,8 +92,12 @@ export default function AdminDashboard() {
     navigation.setOptions({
       headerTitle: "Admin Dashboard",
       headerRight: () => (
-        <TouchableOpacity onPress={() => setSettingsVisible(true)}>
-          <Text style={{ fontSize: 18, color: "#007bff", marginRight: 15 }}>⚙️</Text>
+        <TouchableOpacity
+          onPress={() => setSettingsVisible(true)}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          style={{ paddingRight: 12 }}
+        >
+          <Ionicons name="settings-outline" size={22} color="#2563eb" />
         </TouchableOpacity>
       ),
     });
@@ -33,7 +110,7 @@ export default function AdminDashboard() {
         text: "Logout",
         style: "destructive",
         onPress: async () => {
-          await signOut(getAuth());
+          await signOut(auth);
           router.replace("/");
         },
       },
@@ -41,103 +118,119 @@ export default function AdminDashboard() {
   };
 
   return (
-    <View style={{ flex: 1 }}>
-      <ScrollView contentContainerStyle={{ padding: 20 }}>
-        <Text
-          style={{
-            fontSize: 24,
-            fontWeight: "bold",
-            marginBottom: 30,
-            textAlign: "center",
-          }}
-        >
-          Admin Dashboard
-        </Text>
-
-        {/* 👤 Approval Section */}
-        <TouchableOpacity
+    <View style={{ flex: 1, backgroundColor: "#f8fafc", padding: 8 }}>
+      {/* 2x2 Grid */}
+      <View style={{ flex: 1, flexDirection: "row" }}>
+        <Tile
+          icon="checkmark-done-outline"
+          title="Pending Approvals"
+          subtitle="Review and approve new teachers"
           onPress={() => router.push("/admin/teacher-approvals")}
-          style={buttonStyle}
-        >
-          <Text style={textStyle}>Pending Approvals</Text>
-        </TouchableOpacity>
-
-        {/* 🧑‍🏫 Teachers Section */}
-        <TouchableOpacity
+          color="#22c55e"
+          bg="#eaf7ef"
+        />
+        <Tile
+          icon="people-outline"
+          title="Teachers by College"
+          subtitle="Browse instructors grouped by college"
           onPress={() => router.push("/admin/teachers")}
-          style={buttonStyle}
-        >
-          <Text style={textStyle}>Teachers by College</Text>
-        </TouchableOpacity>
+          color="#8b5cf6"
+          bg="#efeafe"
+        />
+      </View>
 
-        {/* 🎓 Students Section */}
-        <TouchableOpacity
+      <View style={{ flex: 1, flexDirection: "row" }}>
+        <Tile
+          icon="school-outline"
+          title="View Students by Course"
+          subtitle="See students organized per program"
           onPress={() => router.push("/admin/students")}
-          style={[buttonStyle, { marginTop: 40 }]}
-        >
-          <Text style={textStyle}>View Students by Course</Text>
-        </TouchableOpacity>
-      </ScrollView>
+          color="#2563eb"
+          bg="#eaf2ff"
+        />
+        <Tile
+          icon="stats-chart-outline"
+          title="View Metrics"
+          subtitle="Analytics and insights"
+          onPress={() => router.push("/admin/metrics")}
+          color="#2563eb"
+          bg="#eaf2ff"
+        />
+      </View>
 
       {/* Settings Drawer */}
       <Modal
         visible={settingsVisible}
         animationType="slide"
-        transparent={true}
+        transparent
         onRequestClose={() => setSettingsVisible(false)}
       >
-        <View style={{ flex: 1, flexDirection: "row" }}>
+        <View
+          style={{
+            flex: 1,
+            backgroundColor: "rgba(0,0,0,0.25)",
+            flexDirection: "row",
+          }}
+        >
           <View
             style={{ flex: 1 }}
             onTouchEnd={() => setSettingsVisible(false)}
           />
           <View
             style={{
-              width: "60%",
-              backgroundColor: "#fff",
-              padding: 20,
-              elevation: 5,
-              borderTopLeftRadius: 12,
-              borderBottomLeftRadius: 12,
+              width: "64%",
+              backgroundColor: "#ffffff",
+              padding: 16,
+              borderTopLeftRadius: 16,
+              borderBottomLeftRadius: 16,
+              shadowColor: "#000",
+              shadowOpacity: 0.15,
+              shadowRadius: 16,
+              elevation: 8,
             }}
           >
-            <Text
+            <View
               style={{
-                fontWeight: "bold",
-                fontSize: 16,
-                marginBottom: 20,
+                flexDirection: "row",
+                alignItems: "center",
+                justifyContent: "space-between",
+                marginBottom: 8,
               }}
             >
-              Admin Settings
-            </Text>
+              <Text
+                style={{ fontWeight: "800", fontSize: 16, color: "#0f172a" }}
+              >
+                Admin Settings
+              </Text>
+              <TouchableOpacity
+                onPress={() => setSettingsVisible(false)}
+                hitSlop={10}
+              >
+                <Ionicons name="close" size={20} color="#334155" />
+              </TouchableOpacity>
+            </View>
 
             <TouchableOpacity
               onPress={handleLogout}
               style={{
-                backgroundColor: "#f44336",
-                padding: 12,
-                borderRadius: 6,
+                backgroundColor: "#ef4444",
+                paddingVertical: 12,
+                borderRadius: 10,
                 alignItems: "center",
+                marginTop: 8,
               }}
             >
-              <Text style={{ color: "#fff" }}>Logout</Text>
+              <Text style={{ color: "#fff", fontWeight: "700" }}>Logout</Text>
             </TouchableOpacity>
+
+            <View style={{ marginTop: 14 }}>
+              <Text style={{ color: "#94a3b8", fontSize: 11 }}>
+                v1.0 • iConsult Admin
+              </Text>
+            </View>
           </View>
         </View>
       </Modal>
     </View>
   );
 }
-
-const buttonStyle = {
-  backgroundColor: "#007bff",
-  padding: 15,
-  borderRadius: 8,
-  marginBottom: 20,
-  alignItems: "center",
-};
-
-const textStyle = {
-  color: "#fff",
-  fontSize: 16,
-};

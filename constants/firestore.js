@@ -1,7 +1,11 @@
+// constants/firestore.js
 import { getFirestore } from "firebase/firestore";
+import { getStorage } from "firebase/storage"; // 👈 add this
 import app from "./firebaseConfig";
 
 const db = getFirestore(app);
+const storage = getStorage(app);                 // 👈 add this
+
 export default db;
-// This file initializes Firestore with the Firebase app configuration.
-// It exports the Firestore instance for use in other parts of the application.
+export { storage }; // 👈 export storage too
+

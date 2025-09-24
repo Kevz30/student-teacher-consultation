@@ -1,11 +1,11 @@
 import {
-  collection,
-  doc,
-  getDoc,
-  getDocs,
-  setDoc,
+    collection,
+    doc,
+    getDoc,
+    getDocs,
+    setDoc,
 } from "firebase/firestore";
-import db from "../../constants/firestore";
+import db from "../constants/firestore";
 
 export const matchStudentToClasses = async (studentUid) => {
   try {

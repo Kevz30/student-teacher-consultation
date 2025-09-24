@@ -4,7 +4,7 @@ import * as DocumentPicker from "expo-document-picker";
 import * as FileSystem from "expo-file-system/legacy";
 import * as ImagePicker from "expo-image-picker";
 import { router, useNavigation } from "expo-router";
-import { getAuth, signOut, updateProfile } from "firebase/auth";
+import { signOut, updateProfile } from "firebase/auth";
 import {
   addDoc,
   collection,
@@ -39,12 +39,15 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as XLSX from "xlsx";
-import { createDefaultGrid } from "../app/utils/scheduleTemplate";
 import ScheduleGrid from "../components/ScheduleGrid";
 import TeacherConsultModal from "../components/TeacherConsultModal";
+import auth from "../constants/auth";
 import db from "../constants/firestore";
+import { createDefaultGrid } from "../utils/scheduleTemplate";
+import uploadToCloudinary from "../utils/uploadToCloudinary";
 import MyClasses from "./my-classes";
-import uploadToCloudinary from "./utils/uploadToCloudinary";
+import TeacherVideocalls from "./teacher-videocalls"; // ← NEW
+
 
 const norm = (s = "") => String(s).replace(/–/g, "-").replace(/\s+/g, "").toLowerCase();
 
@@ -54,6 +57,7 @@ function TeacherHeader({
   activeTab,
   onOpenCalendar,
   onOpenClasses,
+  onOpenVideo,
   onOpenNotifs,
   onOpenSettings,
 }) {
@@ -82,6 +86,11 @@ function TeacherHeader({
 
         <TouchableOpacity onPress={onOpenClasses} accessibilityLabel="My Classes">
           <Ionicons name="school-outline" size={28} color={iconColor("classes")} />
+        </TouchableOpacity>
+
+        {/* Videocall icon (3rd) */}
+        <TouchableOpacity accessibilityLabel="Videocalls" onPress={onOpenVideo}>
+          <Ionicons name="videocam-outline" size={28} color={iconColor("videocall")} />
         </TouchableOpacity>
 
         <TouchableOpacity onPress={onOpenNotifs} style={{ position: "relative" }} accessibilityLabel="Notifications">
@@ -127,8 +136,6 @@ export default function TeacherDashboard() {
   // notifications (teacher)
   const [notifs, setNotifs] = useState([]);
 
-  const auth = getAuth();
-  theUser: {}
   const user = auth.currentUser;
   const uid = user?.uid;
   const navigation = useNavigation();
@@ -136,20 +143,20 @@ export default function TeacherDashboard() {
   const unreadCount = useMemo(() => notifs.filter((n) => !n.read).length, [notifs]);
 
   /* ---------- Tabs + direction-aware slide animation ---------- */
-  const [activeTab, setActiveTab] = useState("calendar"); // "calendar" | "classes" | "notifications"
+  const [activeTab, setActiveTab] = useState("calendar"); // "calendar" | "classes" | "videocall" | "notifications"
   const { width } = useWindowDimensions();
   const slideX = useRef(new Animated.Value(0)).current;
 
   // icon order left ➜ right
-  const tabOrder = ["calendar", "classes", "notifications"];
-  const smoothEase = Easing.bezier(0.22, 1, 0.36, 1); // smooth ease-out
+  const tabOrder = ["calendar", "classes", "videocall", "notifications"];
+  const smoothEase = Easing.bezier(0.22, 1, 0.36, 1);
 
   const switchTo = (nextTab) => {
     if (activeTab === nextTab) return;
 
     const from = tabOrder.indexOf(activeTab);
     const to = tabOrder.indexOf(nextTab);
-    const direction = to > from ? +1 : -1; // rightward => slide left, leftward => slide right
+    const direction = to > from ? +1 : -1;
 
     setActiveTab(nextTab);
     slideX.setValue(direction * width);
@@ -174,6 +181,7 @@ export default function TeacherDashboard() {
             activeTab={activeTab}
             onOpenCalendar={() => switchTo("calendar")}
             onOpenClasses={() => switchTo("classes")}
+            onOpenVideo={() => switchTo("videocall")}   // slide + highlight
             onOpenNotifs={() => switchTo("notifications")}
             onOpenSettings={() => setSettingsVisible(true)}
           />
@@ -186,13 +194,12 @@ export default function TeacherDashboard() {
   useEffect(() => {
     if (!uid) return;
 
-    // live schedule doc
     const unsubSched = onSnapshot(doc(db, "schedules", uid), (snap) => {
       if (snap.exists()) {
         const data = snap.data();
         setGrid(data.grid || null);
         setHasSchedule(!!data.grid);
-        setShowConfirm(false); // remote changes shouldn't show confirm
+        setShowConfirm(false);
       } else {
         setGrid(null);
         setHasSchedule(false);
@@ -200,7 +207,6 @@ export default function TeacherDashboard() {
       }
     });
 
-    // one-time profile init
     setDisplayName(user?.displayName || "");
     setPhotoURL(user?.photoURL || "");
 
@@ -234,9 +240,7 @@ export default function TeacherDashboard() {
 
   const clearAllNotifs = async () => {
     if (!uid) return;
-    const snap = await getDocs(
-      query(collection(db, "notifications"), where("userId", "==", uid))
-    );
+    const snap = await getDocs(query(collection(db, "notifications"), where("userId", "==", uid)));
     await Promise.all(snap.docs.map((d) => deleteDoc(d.ref)));
   };
 
@@ -388,11 +392,10 @@ export default function TeacherDashboard() {
     }
   };
 
-  // 🔹 Cancel a blue schedule — update consultation, flip grid to red, notify student (FETCH teacher name from Firestore)
+  // 🔹 Cancel a blue schedule — update consultation, flip grid to red, notify student
   const handleCancelSchedule = async (day, slot, reason) => {
     if (!uid) throw new Error("No user");
 
-    // fetch teacher name fresh from Firestore to ensure it's the real/latest name
     let actorName = "your teacher";
     try {
       const userSnap = await getDoc(doc(db, "users", uid));
@@ -402,7 +405,6 @@ export default function TeacherDashboard() {
       actorName = user?.displayName || actorName;
     }
 
-    // find the consultation for this day/slot
     let q1 = query(
       collection(db, "consultations"),
       where("teacherId", "==", uid),
@@ -413,7 +415,6 @@ export default function TeacherDashboard() {
     let qs = await getDocs(q1);
 
     if (qs.empty) {
-      // fallback to normalized time match within the same day
       const q2 = query(
         collection(db, "consultations"),
         where("teacherId", "==", uid),
@@ -433,7 +434,6 @@ export default function TeacherDashboard() {
     const consult = qs.docs[0].data();
     const studentId = consult.studentId;
 
-    // update consultation doc
     await updateDoc(consultRef, {
       status: "cancelled_by_teacher",
       cancelReason: reason,
@@ -442,10 +442,8 @@ export default function TeacherDashboard() {
       cancelledById: uid,
     });
 
-    // flip grid to red
     await updateCellRed(day, slot);
 
-    // notify the student (include actor + timestamp)
     if (studentId) {
       await addDoc(collection(db, "notifications"), {
         userId: studentId,
@@ -587,7 +585,7 @@ export default function TeacherDashboard() {
     }
   };
 
-  /* ===== Helpers for the cancellation modal details (student name, year/section, method, nature) ===== */
+  /* ===== Helpers for the cancellation modal details ===== */
   const joinMethods = (m = {}) => {
     if (!m || typeof m !== "object") return null;
     const items = [];
@@ -611,11 +609,9 @@ export default function TeacherDashboard() {
     return items.length ? items.join(", ") : null;
   };
 
-  // 🔹 This is called by ScheduleGrid when you open the "Cancel schedule" modal on a blue cell.
   const getConsultDetails = async (day, slot) => {
     if (!uid) return null;
 
-    // Query by exact day/time first
     let q1 = query(
       collection(db, "consultations"),
       where("teacherId", "==", uid),
@@ -625,7 +621,6 @@ export default function TeacherDashboard() {
     );
     let qs = await getDocs(q1);
 
-    // Fallback: same day, normalized  time
     if (qs.empty) {
       const q2 = query(
         collection(db, "consultations"),
@@ -641,14 +636,10 @@ export default function TeacherDashboard() {
     if (qs.empty) return null;
 
     const data = qs.docs[0].data();
-    const studentName =
-      data.form?.nameClient || data.studentName || "-";
-    const yearSection =
-      data.form?.yearSection || "-";
-    const methodsText =
-      data.methodsText || joinMethods(data.form?.methods) || "-";
-    const inquiryText =
-      data.inquiryText || joinInquiry(data.form?.inquiry) || "-";
+    const studentName = data.form?.nameClient || data.studentName || "-";
+    const yearSection = data.form?.yearSection || "-";
+    const methodsText = data.methodsText || joinMethods(data.form?.methods) || "-";
+    const inquiryText = data.inquiryText || joinInquiry(data.form?.inquiry) || "-";
 
     return { studentName, yearSection, methodsText, inquiryText };
   };
@@ -684,7 +675,7 @@ export default function TeacherDashboard() {
                     paddingHorizontal: 12,
                     borderBottomWidth: 1,
                     borderBottomColor: "#f3f4f6",
-                    backgroundColor: n.read ? "#ffffff" : "#eef2ff", // highlighted until clicked
+                    backgroundColor: n.read ? "#ffffff" : "#eef2ff",
                     borderLeftWidth: n.read ? 0 : 3,
                     borderLeftColor: "#2563eb",
                     borderRadius: 8,
@@ -715,6 +706,8 @@ export default function TeacherDashboard() {
           </ScrollView>
         ) : activeTab === "classes" ? (
           <MyClasses />
+        ) : activeTab === "videocall" ? (
+          <TeacherVideocalls teacherId={uid} />
         ) : (
           <>
             {!hasSchedule ? (
@@ -726,7 +719,6 @@ export default function TeacherDashboard() {
               </TouchableOpacity>
             ) : (
               <>
-                {/* ==== confirm button ABOVE the grid ==== */}
                 {showConfirm && (
                   <TouchableOpacity
                     onPress={handleConfirm}
@@ -742,7 +734,6 @@ export default function TeacherDashboard() {
                   </TouchableOpacity>
                 )}
 
-                {/* ==== make the GRID scrollable ONLY when showConfirm is true ==== */}
                 {showConfirm ? (
                   <ScrollView
                     style={{ flex: 1 }}
@@ -754,7 +745,6 @@ export default function TeacherDashboard() {
                       onSelectBlock={handleBlockSelect}
                       onOpenTeacherConsultModal={onOpenTeacherConsultModal}
                       onCancelSchedule={handleCancelSchedule}
-                      // 🔹 Provide details for the cancel modal
                       getConsultDetails={getConsultDetails}
                       teacherId={uid}
                     />
@@ -765,7 +755,6 @@ export default function TeacherDashboard() {
                     onSelectBlock={handleBlockSelect}
                     onOpenTeacherConsultModal={onOpenTeacherConsultModal}
                     onCancelSchedule={handleCancelSchedule}
-                    // 🔹 Provide details for the cancel modal
                     getConsultDetails={getConsultDetails}
                     teacherId={uid}
                   />

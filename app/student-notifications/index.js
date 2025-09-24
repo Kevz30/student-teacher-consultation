@@ -1,7 +1,6 @@
 // app/student-notifications/index.js
 import { Ionicons } from "@expo/vector-icons";
 import { useNavigation } from "expo-router";
-import { getAuth } from "firebase/auth";
 import {
   collection,
   deleteDoc,
@@ -15,12 +14,13 @@ import {
 } from "firebase/firestore";
 import { useEffect, useMemo, useState } from "react";
 import { ScrollView, Text, TouchableOpacity, View } from "react-native";
+import auth from "../../constants/auth";
 import db from "../../constants/firestore";
 
 export default function StudentNotificationsScreen() {
   const navigation = useNavigation();
   const [notifs, setNotifs] = useState([]);
-  const uid = getAuth().currentUser?.uid;
+  const uid = auth.currentUser?.uid;
 
   useEffect(() => {
     if (!uid) return;

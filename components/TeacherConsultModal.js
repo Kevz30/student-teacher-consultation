@@ -1,28 +1,30 @@
 // components/TeacherConsultModal.js
 import * as Sharing from "expo-sharing";
 import {
-  addDoc,
-  collection,
-  doc,
-  getDoc,
-  serverTimestamp,
-  setDoc,
-  updateDoc,
+    addDoc,
+    collection,
+    doc,
+    getDoc,
+    serverTimestamp,
+    setDoc,
+    updateDoc,
 } from "firebase/firestore";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  ActivityIndicator,
-  Alert,
-  Modal,
-  ScrollView,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  View,
+    ActivityIndicator,
+    Alert,
+    Image, // ⬅️ NEW
+    Linking,
+    Modal,
+    ScrollView,
+    Text,
+    TextInput,
+    TouchableOpacity,
+    View,
 } from "react-native";
 import Signature from "react-native-signature-canvas";
-import { generatePrefilledPDF } from "../app/utils/generatePrefilledPdf";
 import db from "../constants/firestore";
+import { generatePrefilledPDF } from "../utils/generatePrefilledPdf";
 
 /* ===================== helpers ===================== */
 const DAY_INDEX = {
@@ -44,32 +46,23 @@ function parseRange(range = "") {
   const eh = Number(ehRaw);
   const em = Number(emRaw ?? 0);
 
-  return {
-    sh: Number.isFinite(sh) ? sh : 0,
-    sm: Number.isFinite(sm) ? sm : 0,
-    eh: Number.isFinite(eh) ? eh : 0,
-    em: Number.isFinite(em) ? em : 0,
-  };
+  return { sh: Number.isFinite(sh) ? sh : 0, sm: Number.isFinite(sm) ? sm : 0, eh: Number.isFinite(eh) ? eh : 0, em: Number.isFinite(em) ? em : 0 };
 }
 
 /** Convert bare 1..5 hours to PM for your daytime grid (7:00–17:00). */
 function to24h(h, m) {
   let H = h;
-  if (H >= 1 && H <= 5) H += 12;   // 1→13, …, 5→17 (afternoon slots)
+  if (H >= 1 && H <= 5) H += 12;
   return { H, M: m || 0 };
 }
 
 /** Build start/end milliseconds using the LEFT part of the range for start */
 function computeSlotMs(dayLabel, timeRange) {
   const { sh, sm, eh, em } = parseRange(timeRange);
-
-  // apply 12→24h heuristic for your grid
   const s = to24h(sh, sm);
   const e = to24h(eh, em);
 
   const now = new Date();
-
-  // Move to the desired weekday (this week or later)
   const target = new Date(now);
   const want = DAY_INDEX[dayLabel] ?? now.getDay();
   const diffDays = (want - now.getDay() + 7) % 7;
@@ -77,12 +70,11 @@ function computeSlotMs(dayLabel, timeRange) {
   target.setDate(target.getDate() + diffDays);
 
   const start = new Date(target);
-  start.setHours(s.H, s.M, 0, 0);  // start from first part of range
+  start.setHours(s.H, s.M, 0, 0);
 
   const end = new Date(target);
-  end.setHours(e.H, e.M, 0, 0);    // end from second part
+  end.setHours(e.H, e.M, 0, 0);
 
-  // If it's the same day and the slot already ended, push it to next week (safety)
   if (diffDays === 0 && end.getTime() <= now.getTime()) {
     start.setDate(start.getDate() + 7);
     end.setDate(end.getDate() + 7);
@@ -92,24 +84,18 @@ function computeSlotMs(dayLabel, timeRange) {
   const mm = String(start.getMonth() + 1).padStart(2, "0");
   const dd = String(start.getDate()).padStart(2, "0");
 
-  return {
-    startAtMs: start.getTime(),
-    endAtMs: end.getTime(),
-    dateISO: `${yyyy}-${mm}-${dd}`,
-  };
+  return { startAtMs: start.getTime(), endAtMs: end.getTime(), dateISO: `${yyyy}-${mm}-${dd}` };
 }
 
 /** Resolve actual keys in the schedule grid even if labels differ by spaces/dashes/case */
 function resolveGridKeys(gridObj, dayLabel, timeLabel) {
   const grid = gridObj || {};
   const dayKeys = Object.keys(grid);
-  const dayKey =
-    dayKeys.find((k) => normalize(k) === normalize(dayLabel)) || dayLabel;
+  const dayKey = dayKeys.find((k) => normalize(k) === normalize(dayLabel)) || dayLabel;
 
   const slots = grid[dayKey] || {};
   const slotKeys = Object.keys(slots);
-  const slotKey =
-    slotKeys.find((k) => normalize(k) === normalize(timeLabel)) || timeLabel;
+  const slotKey = slotKeys.find((k) => normalize(k) === normalize(timeLabel)) || timeLabel;
 
   return { dayKey, slotKey };
 }
@@ -185,11 +171,9 @@ export default function TeacherConsultModal({
     return items.length ? items.join(", ") : "-";
   }, [consult?.form?.inquiry]);
 
-  // helper to write a notification to the student's feed
   const writeNotification = async (payload) => {
     try {
-      const targetUserId =
-        consult?.studentId || consult?.form?.studentId || payload.userId;
+      const targetUserId = consult?.studentId || consult?.form?.studentId || payload.userId;
       if (!targetUserId) return;
       await addDoc(collection(db, "notifications"), {
         userId: targetUserId,
@@ -203,14 +187,12 @@ export default function TeacherConsultModal({
     }
   };
 
-  // DECLINE — accepts a reason, notifies student, and frees slot (white)
   const handleDecline = async (reasonText) => {
     if (!consult) return;
     setSaving(true);
     try {
       const reason = String(reasonText || "").trim();
 
-      // 1) mark consultation declined
       await updateDoc(doc(db, "consultations", consult.id), {
         status: "declined_by_teacher",
         declinedAt: serverTimestamp(),
@@ -218,7 +200,6 @@ export default function TeacherConsultModal({
         teacherSignature: null,
       });
 
-      // 2) free the slot in schedule grid (set to white) with robust key resolution
       const dayLabel = consult.day || consult.form?.date;
       const timeLabel = consult.time || consult.form?.time;
 
@@ -236,7 +217,6 @@ export default function TeacherConsultModal({
         await setDoc(schedRef, { grid }, { merge: true });
       }
 
-      // 3) notify student
       await writeNotification({
         title: "Consultation declined",
         message:
@@ -260,7 +240,6 @@ export default function TeacherConsultModal({
 
   const handleAccept = () => setMode("sign");
 
-  // Save signature + compute timing for outcome reminder
   const handleOK = async (sigPngBase64) => {
     if (!consult) return;
     setSaving(true);
@@ -287,7 +266,6 @@ export default function TeacherConsultModal({
         teacherId: teacherId || consult.teacherId,
       });
 
-      // Optional: share a "signed" PDF copy right away
       const c = consult;
       const pdfPath = await generatePrefilledPDF(
         {
@@ -347,7 +325,6 @@ export default function TeacherConsultModal({
   const handleEmpty = () => Alert.alert("No signature", "Please sign before saving.");
   const closeModal = () => onClose?.({ shouldReload: true });
 
-  /* -------- Generate Final PDF (includes student's outcome notes) -------- */
   const handleGenerateFinalPdf = async () => {
     try {
       const c = consult;
@@ -396,7 +373,6 @@ export default function TeacherConsultModal({
   const isSigned = statusStr === "signed_by_teacher";
   const canGenerateFinal = isSigned && !!consult?.studentOutcome?.notes;
 
-  /* ---------- NEW: detect teacher-scheduled (green) awaiting student form ---------- */
   const studentFormReady =
     !!(consult?.studentForm?.submittedAt) ||
     !!(consult?.form?.inquiry && Object.values(consult.form.inquiry || {}).some(Boolean)) ||
@@ -424,16 +400,7 @@ export default function TeacherConsultModal({
           ) : mode === "sign" ? (
             <View>
               <Text style={{ marginBottom: 8 }}>Draw your signature below:</Text>
-              <View
-                style={{
-                  height: 260,
-                  borderWidth: 1,
-                  borderColor: "#ddd",
-                  borderRadius: 12,
-                  overflow: "hidden",
-                  backgroundColor: "white",
-                }}
-              >
+              <View style={{ height: 260, borderWidth: 1, borderColor: "#ddd", borderRadius: 12, overflow: "hidden", backgroundColor: "white" }}>
                 <Signature
                   ref={sigRef}
                   onOK={handleOK}
@@ -473,21 +440,9 @@ export default function TeacherConsultModal({
             </View>
           ) : (
             <ScrollView style={{ maxHeight: 460 }}>
-              {/* NEW: Banner when waiting for student form */}
               {isAwaitingStudentForm && (
-                <View
-                  style={{
-                    padding: 10,
-                    borderRadius: 10,
-                    backgroundColor: "#ecfeff",
-                    borderWidth: 1,
-                    borderColor: "#a5f3fc",
-                    marginBottom: 10,
-                  }}
-                >
-                  <Text style={{ color: "#0e7490", fontWeight: "700" }}>
-                    Awaiting student form submission
-                  </Text>
+                <View style={{ padding: 10, borderRadius: 10, backgroundColor: "#ecfeff", borderWidth: 1, borderColor: "#a5f3fc", marginBottom: 10 }}>
+                  <Text style={{ color: "#0e7490", fontWeight: "700" }}>Awaiting student form submission</Text>
                   <Text style={{ color: "#0e7490" }}>
                     The student has been scheduled by the teacher. Once the student completes the form, this slot will proceed to the usual approval flow.
                   </Text>
@@ -506,16 +461,31 @@ export default function TeacherConsultModal({
               <Row label="Method" value={methodText} />
               <Row label="Inquiry" value={inquiryText} />
 
+              {/* 🔎 NEW — Student ID photo preview (when student is not in teacher's class) */}
+              {consult?.studentIdPhotoURL ? (
+                <View style={{ marginTop: 12, padding: 10, borderRadius: 10, borderWidth: 1, borderColor: "#e5e7eb" }}>
+                  <Text style={{ fontSize: 12, color: "#6b7280", marginBottom: 6 }}>Student ID</Text>
+                  <Image
+                    source={{ uri: consult.studentIdPhotoURL }}
+                    style={{ width: "100%", height: 180, borderRadius: 8, backgroundColor: "#f3f4f6" }}
+                    resizeMode="cover"
+                  />
+                  <TouchableOpacity
+                    onPress={() => Linking.openURL(consult.studentIdPhotoURL)}
+                    style={{ marginTop: 8, paddingVertical: 10, backgroundColor: "#111827", borderRadius: 8, alignItems: "center" }}
+                  >
+                    <Text style={{ color: "white", fontWeight: "700" }}>Open full image</Text>
+                  </TouchableOpacity>
+                </View>
+              ) : null}
+
               {!!consult?.studentOutcome?.notes && (
                 <View style={{ marginTop: 10, padding: 10, borderRadius: 8, backgroundColor: "#f3f4f6" }}>
                   <Text style={{ fontSize: 12, color: "#6b7280" }}>Student Outcome</Text>
-                  <Text style={{ fontSize: 14, fontWeight: "600" }}>
-                    {consult.studentOutcome.notes}
-                  </Text>
+                  <Text style={{ fontSize: 14, fontWeight: "600" }}>{consult.studentOutcome.notes}</Text>
                 </View>
               )}
 
-              {/* Actions */}
               {!isSigned && (
                 <View style={{ marginTop: 12 }}>
                   <View style={{ flexDirection: "row" }}>
@@ -574,14 +544,7 @@ export default function TeacherConsultModal({
               value={declineReason}
               onChangeText={setDeclineReason}
               multiline
-              style={{
-                minHeight: 80,
-                borderWidth: 1,
-                borderColor: "#e5e7eb",
-                borderRadius: 8,
-                padding: 10,
-                textAlignVertical: "top",
-              }}
+              style={{ minHeight: 80, borderWidth: 1, borderColor: "#e5e7eb", borderRadius: 8, padding: 10, textAlignVertical: "top" }}
             />
             <View style={{ flexDirection: "row", gap: 10, marginTop: 12 }}>
               <TouchableOpacity

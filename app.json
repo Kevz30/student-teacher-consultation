@@ -7,15 +7,30 @@
     "icon": "./assets/images/icon.png",
     "scheme": "studentteacherconsultation",
     "userInterfaceStyle": "automatic",
-    "ios": { "supportsTablet": true },
+    "ios": {
+      "supportsTablet": true,
+      "newArchEnabled": true,
+      "infoPlist": {
+        "NSCameraUsageDescription": "This app requires camera access for video consultations.",
+        "NSMicrophoneUsageDescription": "This app requires microphone access for video consultations."
+      }
+    },
     "android": {
       "package": "com.psau.iconsult",
+      "newArchEnabled": true,
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
       "edgeToEdgeEnabled": true,
-      "icon": "./assets/images/icon.png"
+      "icon": "./assets/images/icon.png",
+      "permissions": [
+        "CAMERA",
+        "RECORD_AUDIO",
+        "INTERNET",
+        "BLUETOOTH",
+        "BLUETOOTH_CONNECT"
+      ]
     },
     "web": {
       "bundler": "metro",
@@ -33,13 +48,25 @@
           "backgroundColor": "#ffffff"
         }
       ],
-      "expo-asset"
+      "expo-asset",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "extraMavenRepos": ["https://www.jitpack.io"]
+          }
+        }
+      ]
     ],
-    "experiments": { "typedRoutes": true },
+    "experiments": {
+      "typedRoutes": true
+    },
     "assetBundlePatterns": ["**/*"],
     "extra": {
       "router": {},
-      "eas": { "projectId": "3a7bbb4e-7f04-4bc5-96c2-86b599263efd" }
+      "eas": {
+        "projectId": "3a7bbb4e-7f04-4bc5-96c2-86b599263efd"
+      }
     }
   }
 }

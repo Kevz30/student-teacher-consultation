@@ -11,6 +11,7 @@ import {
   Image,
   Modal,
   Platform,
+  Pressable,
   ScrollView,
   Text,
   TextInput,
@@ -20,7 +21,7 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-import { getAuth } from "firebase/auth";
+import { signOut } from "firebase/auth";
 import {
   addDoc,
   collection,
@@ -39,8 +40,9 @@ import {
 } from "firebase/firestore";
 
 import blankProfile from "../assets/images/blank-profile.png";
+import auth from "../constants/auth";
 import db from "../constants/firestore";
-import { matchStudentToClasses } from "./utils/matchingHelper";
+import { matchStudentToClasses } from "../utils/matchingHelper";
 
 /* ---------- Header (title + icons row) ---------- */
 function StudentHeader({
@@ -184,10 +186,36 @@ const Check = ({ label, value, onToggle }) => (
   </TouchableOpacity>
 );
 
+/* ---------- Tiny link row for Settings ---------- */
+const SettingsLink = ({ icon, label, onPress, danger }) => (
+  <Pressable
+    onPress={onPress}
+    android_ripple={{ color: "#e5e7eb" }}
+    style={({ pressed }) => ({
+      paddingVertical: 10,
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 10,
+      opacity: pressed ? 0.6 : 1,
+    })}
+  >
+    <Ionicons name={icon} size={18} color={danger ? "#ef4444" : "#111827"} />
+    <Text style={{ fontSize: 15, fontWeight: "600", color: danger ? "#ef4444" : "#111827" }}>
+      {label}
+    </Text>
+  </Pressable>
+);
+
 export default function StudentDashboard() {
   const [matchedTeachers, setMatchedTeachers] = useState([]);
   const [notifs, setNotifs] = useState([]);
   const [loading, setLoading] = useState(true);
+
+  // NEW: search state
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQ, setSearchQ] = useState("");
+  const [allTeachers, setAllTeachers] = useState([]);
+  const [loadingTeachers, setLoadingTeachers] = useState(false);
 
   // consultations for watcher
   const [myConsultations, setMyConsultations] = useState([]);
@@ -198,6 +226,9 @@ export default function StudentDashboard() {
   const [outcomeTarget, setOutcomeTarget] = useState(null);
   const [submittingOutcome, setSubmittingOutcome] = useState(false);
   const [outcomeNotifId, setOutcomeNotifId] = useState(null);
+
+  // settings drawer
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   // name cache for notifications
   const [nameCache, setNameCache] = useState({});
@@ -222,7 +253,6 @@ export default function StudentDashboard() {
     inquiry: { classAdvising: false, studentOrg: false, courseConcerns: false, thesis: false, dissertation: false, others: false, othersText: "" },
   });
 
-  const auth = getAuth();
   const uid = auth.currentUser?.uid;
 
   const router = useRouter();
@@ -239,9 +269,8 @@ export default function StudentDashboard() {
     if (activeTab === nextTab) return;
     const from = tabOrder.indexOf(activeTab);
     const to = tabOrder.indexOf(nextTab);
-    const direction = to > from ? +1 : -1;
     setActiveTab(nextTab);
-    slideX.setValue(direction * width);
+    slideX.setValue((to > from ? 1 : -1) * width);
     Animated.timing(slideX, { toValue: 0, duration: 320, easing: smoothEase, useNativeDriver: true }).start();
   };
 
@@ -260,6 +289,59 @@ export default function StudentDashboard() {
     loop.start();
     return () => loop.stop();
   }, [pulse]);
+
+  const handleLogout = async () => {
+    try {
+      await signOut(auth);
+      router.replace("/screens/LoginScreen"); // correct login route
+    } catch (e) {
+      Alert.alert("Logout failed", e.message);
+    }
+  };
+
+  /* ---------- Load ALL teachers ON DEMAND (when user starts typing) ---------- */
+  const ensureTeachersLoaded = async () => {
+    if (allTeachers.length || loadingTeachers) return;
+    try {
+      setLoadingTeachers(true);
+      const snap = await getDocs(collection(db, "instructors"));
+      const list = snap.docs.map((d) => {
+        const t = d.data() || {};
+        const fullName = t.displayName || t.fullName || "Unnamed";
+        const department = t.department || t.college || t.College || t.office || "";
+        const course = t.course || t.program || t.specialization || "";
+        const subjectCode = t.subjectCode || "";
+        return {
+          id: d.id,
+          fullName,
+          department,
+          course,
+          subjectCode,
+          photoURL: t.photoURL || null,
+        };
+      });
+      setAllTeachers(list);
+    } catch (e) {
+      Alert.alert("Search error", e?.message || String(e));
+    } finally {
+      setLoadingTeachers(false);
+    }
+  };
+
+  const openSearch = () => {
+    setSearchQ("");
+    setSearchOpen(true); // Do not load teachers yet; wait until user types
+  };
+
+  const filteredTeachers = useMemo(() => {
+    const q = searchQ.trim().toLowerCase();
+    if (!q) return []; // don't show anything until the student typed
+    return allTeachers.filter((t) =>
+      [t.fullName, t.department, t.course, t.subjectCode]
+        .filter(Boolean)
+        .some((v) => String(v).toLowerCase().includes(q))
+    );
+  }, [searchQ, allTeachers]);
 
   /* ---------- Data: matches ---------- */
   useEffect(() => {
@@ -361,12 +443,12 @@ export default function StudentDashboard() {
           }}
           onOpenConsultations={() => switchTo("consultations")}
           onOpenNotifs={() => switchTo("notifications")}
-          onOpenSettings={() => Alert.alert("Settings", "Settings coming soon.")}
-          onSearch={() => Alert.alert("Search", "Search coming soon.")}
+          onOpenSettings={() => setSettingsOpen(true)}
+          onSearch={openSearch}
         />
       ),
     });
-  }, [navigation, unreadCount, activeTab]);
+  }, [navigation, unreadCount, activeTab, allTeachers]);
 
   /* ---------- Subscribe to student's consultations ---------- */
   useEffect(() => {
@@ -430,7 +512,7 @@ export default function StudentDashboard() {
   const clearAll = async () => {
     if (!notifs.length) return;
     const ids = [...notifs];
-    setNotifs([]); // optimistic
+    setNotifs([]);
     try {
       await Promise.all(ids.map((n) => deleteDoc(doc(db, "notifications", n.id))));
     } catch {}
@@ -535,7 +617,6 @@ export default function StudentDashboard() {
         form: { ...form, date: prefillDay, time: prefillTime },
       });
 
-      // paint the slot BLUE on teacher schedule
       try {
         const schedRef = doc(db, "schedules", prefillTeacherId);
         const schedSnap = await getDoc(schedRef);
@@ -546,7 +627,6 @@ export default function StudentDashboard() {
         await setDoc(schedRef, { grid }, { merge: true });
       } catch {}
 
-      // notify the teacher
       try {
         await addDoc(collection(db, "notifications"), {
           userId: prefillTeacherId,
@@ -576,7 +656,6 @@ export default function StudentDashboard() {
         studentOutcome: { notes: outcomeNotes.trim(), submittedAt: serverTimestamp() },
       });
 
-      // notify teacher that outcome was submitted
       try {
         let teacherId = outcomeTarget.teacherId;
         if (!teacherId) {
@@ -597,7 +676,6 @@ export default function StudentDashboard() {
         }
       } catch {}
 
-      // remove outcome-request notifications for this consultation
       try {
         if (outcomeNotifId) {
           await deleteDoc(doc(db, "notifications", outcomeNotifId));
@@ -667,6 +745,7 @@ export default function StudentDashboard() {
       signed_by_teacher: { label: "Scheduled", bg: "#ecfeff", fg: "#0e7490" },
       declined_by_teacher: { label: "Declined", bg: "#fef2f2", fg: "#b91c1c" },
       cancelled_by_teacher: { label: "Cancelled", bg: "#fef2f2", fg: "#b91c1c" },
+      completed: { label: "Done", bg: "#ecfdf5", fg: "#059669" },
     };
     const m = map[s] || { label: s || "Unknown", bg: "#f3f4f6", fg: "#374151" };
     return (
@@ -677,35 +756,34 @@ export default function StudentDashboard() {
   };
 
   const prettyDT = (c) => {
-  const hasStart = typeof c?.startAtMs === "number";
-  const hasEnd = typeof c?.endAtMs === "number";
+    const hasStart = typeof c?.startAtMs === "number";
+    const hasEnd = typeof c?.endAtMs === "number";
 
-  if (hasStart) {
-    const start = new Date(c.startAtMs);
-    const end = hasEnd ? new Date(c.endAtMs) : start;
+    if (hasStart) {
+      const start = new Date(c.startAtMs);
+      const end = hasEnd ? new Date(c.endAtMs) : start;
 
-    const dateStr = start.toLocaleDateString(undefined, {
-      month: "long",
-      day: "numeric",
-      year: "numeric",
-    });
-    const startStr = start.toLocaleTimeString(undefined, {
-      hour: "numeric",
-      minute: "2-digit",
-    });
-    const endStr = end.toLocaleTimeString(undefined, {
-      hour: "numeric",
-      minute: "2-digit",
-    });
+      const dateStr = start.toLocaleDateString(undefined, {
+        month: "long",
+        day: "numeric",
+        year: "numeric",
+      });
+      const startStr = start.toLocaleTimeString(undefined, {
+        hour: "numeric",
+        minute: "2-digit",
+      });
+      const endStr = end.toLocaleTimeString(undefined, {
+        hour: "numeric",
+        minute: "2-digit",
+      });
 
-    return `${dateStr} • ${startStr}–${endStr}`;
-  }
+      return `${dateStr} • ${startStr}–${endStr}`;
+    }
 
-  const day = c?.form?.date || c?.day || "-";
-  const time = c?.form?.time || c?.time || "-";
-  return `${day} • ${time}`;
-};
-
+    const day = c?.form?.date || c?.day || "-";
+    const time = c?.form?.time || c?.time || "-";
+    return `${day} • ${time}`;
+  };
 
   /* ---------- Render ---------- */
   return (
@@ -762,7 +840,7 @@ export default function StudentDashboard() {
             )}
           </ScrollView>
         ) : activeTab === "consultations" ? (
-          /* ===== CONSULTATIONS (with 3 clickable labels) ===== */
+          /* ===== CONSULTATIONS ===== */
           <ScrollView style={{ paddingTop: 8 }}>
             {/* Segmented header */}
             <View style={{ flexDirection: "row", justifyContent: "space-between", marginBottom: 12, backgroundColor: "#f9fafb", borderRadius: 999, padding: 6 }}>
@@ -774,10 +852,14 @@ export default function StudentDashboard() {
             {(() => {
               const now = Date.now();
 
-              // Normalize buckets
+              // outcome presence
+              const hasOutcome = (c) => !!c?.studentOutcome?.notes;
+
               const isPendingOrScheduled = (c) => {
                 const s = String(c.status || "").toLowerCase();
-                return s === "submitted_by_student" || s === "signed_by_teacher";
+                // stays here even if time already passed, as long as no outcome yet
+                const pendingish = s === "submitted_by_student" || s === "signed_by_teacher";
+                return pendingish && !hasOutcome(c);
               };
 
               const isCancelled = (c) => {
@@ -787,11 +869,8 @@ export default function StudentDashboard() {
 
               const isDone = (c) => {
                 const s = String(c.status || "").toLowerCase();
-                const ended = typeof c.endAtMs === "number" && c.endAtMs <= now;
-                const outcome = !!c?.studentOutcome?.notes;
-                const terminal = isCancelled(c);
-                // Done if: has outcome, or ended after being scheduled, or terminal statuses (declined/cancelled)
-                return outcome || (ended && s === "signed_by_teacher") || terminal;
+                // Done only when outcome exists or explicitly completed
+                return hasOutcome(c) || s === "completed";
               };
 
               const list = myConsultations.slice();
@@ -1077,6 +1156,161 @@ export default function StudentDashboard() {
               </>
             )}
           </View>
+        </View>
+      </Modal>
+
+      {/* SETTINGS DRAWER */}
+      <Modal
+        transparent
+        animationType="slide"
+        visible={settingsOpen}
+        onRequestClose={() => setSettingsOpen(false)}
+      >
+        <Pressable style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.25)" }} onPress={() => setSettingsOpen(false)} />
+
+        <View
+          style={{
+            position: "absolute",
+            right: 0,
+            top: 0,
+            bottom: 0,
+            width: "62%",
+            backgroundColor: "#ffffff",
+            paddingHorizontal: 16,
+            paddingTop: 18,
+            paddingBottom: 24,
+            borderTopLeftRadius: 16,
+            borderBottomLeftRadius: 16,
+            shadowColor: "#000",
+            shadowOpacity: 0.15,
+            shadowRadius: 12,
+            elevation: 8,
+            gap: 6,
+          }}
+        >
+          <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+            <Text style={{ fontSize: 18, fontWeight: "700", color: "#111827" }}>Settings</Text>
+            <TouchableOpacity onPress={() => setSettingsOpen(false)} hitSlop={10}>
+              <Ionicons name="close" size={22} color="#111827" />
+            </TouchableOpacity>
+          </View>
+
+          <View style={{ height: 1, backgroundColor: "#f3f4f6", marginBottom: 8 }} />
+
+          <SettingsLink
+            icon="key-outline"
+            label="Change password"
+            onPress={() => {
+              setSettingsOpen(false);
+              router.push("/screens/ChangePassword");
+            }}
+          />
+
+          <SettingsLink
+            icon="time-outline"
+            label="History"
+            onPress={() => {
+              setSettingsOpen(false);
+              router.push("/student/history");
+            }}
+          />
+
+          <SettingsLink
+            icon="log-out-outline"
+            label="Log out"
+            danger
+            onPress={handleLogout}
+          />
+
+          <View style={{ flex: 1 }} />
+          <Text style={{ fontSize: 11, color: "#9ca3af", marginTop: 8 }}>
+            v1.0 • Simple & modern • iConsult
+          </Text>
+        </View>
+      </Modal>
+
+      {/* SEARCH ALL TEACHERS – FULLSCREEN, SHOW RESULTS ONLY AFTER TYPING */}
+      <Modal
+        visible={searchOpen}
+        animationType="slide"
+        onRequestClose={() => setSearchOpen(false)}
+      >
+        <View style={{ flex: 1, backgroundColor: "#ffffff" }}>
+          {/* Top bar like Facebook search */}
+          <View style={{ flexDirection: "row", alignItems: "center", paddingTop: useSafeAreaInsets().top + 8, paddingHorizontal: 12, paddingBottom: 8, gap: 8 }}>
+            <TouchableOpacity onPress={() => setSearchOpen(false)} hitSlop={10}>
+              <Ionicons name="arrow-back" size={24} color="#111827" />
+            </TouchableOpacity>
+            <View style={{ flexDirection: "row", alignItems: "center", flex: 1, backgroundColor: "#f3f4f6", borderRadius: 999, paddingHorizontal: 10, paddingVertical: 6 }}>
+              <Ionicons name="search-outline" size={18} color="#6b7280" style={{ marginRight: 6 }} />
+              <TextInput
+                autoFocus
+                placeholder="Search teachers…"
+                value={searchQ}
+                onChangeText={async (t) => {
+                  setSearchQ(t);
+                  if (t.trim().length > 0) await ensureTeachersLoaded();
+                }}
+                style={{ flex: 1, paddingVertical: 4 }}
+                returnKeyType="search"
+              />
+              {!!searchQ && (
+                <TouchableOpacity onPress={() => setSearchQ("")} hitSlop={10}>
+                  <Ionicons name="close-circle" size={20} color="#9ca3af" />
+                </TouchableOpacity>
+              )}
+            </View>
+          </View>
+
+          {/* Results: nothing until user types */}
+          {searchQ.trim().length === 0 ? null : loadingTeachers ? (
+            <View style={{ paddingTop: 24, alignItems: "center" }}>
+              <ActivityIndicator />
+              <Text style={{ marginTop: 8, color: "#6b7280" }}>Loading teachers…</Text>
+            </View>
+          ) : (
+            <FlatList
+              data={filteredTeachers}
+              keyExtractor={(item) => item.id}
+              ListEmptyComponent={null}
+              renderItem={({ item }) => (
+                <TouchableOpacity
+                  onPress={() => {
+                    setSearchOpen(false);
+                    router.push(`/student-schedule/${item.id}`);
+                  }}
+                  style={{
+                    flexDirection: "row",
+                    alignItems: "center",
+                    paddingVertical: 12,
+                    paddingHorizontal: 16,
+                    borderBottomWidth: 1,
+                    borderBottomColor: "#f3f4f6",
+                    gap: 12,
+                  }}
+                >
+                  <Image
+                    source={item.photoURL ? { uri: item.photoURL } : blankProfile}
+                    style={{ width: 44, height: 44, borderRadius: 22 }}
+                  />
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ fontWeight: "700" }}>{item.fullName}</Text>
+                    {!!item.department && (
+                      <Text style={{ color: "#6b7280" }} numberOfLines={1}>
+                        {item.department}
+                      </Text>
+                    )}
+                    {!!(item.course || item.subjectCode) && (
+                      <Text style={{ color: "#6b7280" }} numberOfLines={1}>
+                        {item.course || item.subjectCode}
+                      </Text>
+                    )}
+                  </View>
+                  <Ionicons name="chevron-forward" size={18} color="#9ca3af" />
+                </TouchableOpacity>
+              )}
+            />
+          )}
         </View>
       </Modal>
     </View>
